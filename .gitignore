@@ -1,0 +1,17 @@
+node_modules
+dist
+.DS_Store
+*.iml
+.gradle
+local.properties
+android/.gradle
+android/build
+android/app/build
+
+.pnpm-store
+
+# Local API runtime data
+data/
+apps/api/dist/
+.env
+.env.local

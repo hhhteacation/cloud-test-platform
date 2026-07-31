@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<hierarchy rotation="0">
+  <node index="0" text="系统更新" resource-id="com.vivo.packageinstaller:id/title" class="android.widget.TextView" package="com.vivo.packageinstaller" clickable="false" checkable="false" checked="false" bounds="[80,300][1000,420]" />
+  <node index="1" text="继续" resource-id="com.vivo.packageinstaller:id/continue_button" class="android.widget.Button" package="com.vivo.packageinstaller" clickable="true" checkable="false" checked="false" bounds="[700,1700][1000,1820]" />
+</hierarchy>

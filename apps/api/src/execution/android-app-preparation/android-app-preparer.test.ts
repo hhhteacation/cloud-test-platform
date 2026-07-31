@@ -1,0 +1,215 @@
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { describe, expect, it } from 'vitest'
+
+import { findApkExecutionProtocol, type ApkExecutionProtocol } from '../../apk-protocols.js'
+import type { ProcessResult } from '../../process.js'
+import { TaskExecutionError } from '../execution-errors.js'
+import { DefaultAndroidAppPreparer } from './android-app-preparer.js'
+import type { AndroidPreparationDevice } from './contracts.js'
+
+const fixture = (name: string) => readFileSync(
+  fileURLToPath(new URL(`./__fixtures__/${name}`, import.meta.url)),
+  'utf8',
+)
+
+class PreparationFakeDevice implements AndroidPreparationDevice {
+  readonly calls: string[][] = []
+  private installedChecks = 0
+
+  async connectionStatus() { return 'online' as const }
+
+  async isPackageInstalled() {
+    this.installedChecks += 1
+    return this.installedChecks > 1
+  }
+
+  async run(args: string[]): Promise<ProcessResult> {
+    this.calls.push(args)
+    const command = args.join(' ')
+    if (command === 'shell dumpsys window policy') return this.result('mKeyguardShowing=false')
+    if (command.startsWith('shell dumpsys package ')) {
+      return this.result(`
+        runtime permissions:
+          android.permission.CAMERA: granted=true
+          android.permission.RECORD_AUDIO: granted=true
+      `)
+    }
+    return this.result('Success')
+  }
+
+  private result(stdout: string): ProcessResult {
+    return { code: 0, stdout, stderr: '' }
+  }
+}
+
+class OplusPermissionFallbackDevice implements AndroidPreparationDevice {
+  readonly calls: string[][] = []
+  private installedChecks = 0
+  private activityStarted = false
+  private permissionsGranted = false
+  private dialogStage: 'runtime-permission' | 'storage-warning' | 'main' = 'runtime-permission'
+
+  async connectionStatus() { return 'online' as const }
+
+  async isPackageInstalled() {
+    this.installedChecks += 1
+    return this.installedChecks > 1
+  }
+
+  async run(args: string[]): Promise<ProcessResult> {
+    this.calls.push(args)
+    const command = args.join(' ')
+    if (command === 'shell dumpsys window policy') return this.result('mKeyguardShowing=false')
+    if (command.startsWith('shell pm grant ')) {
+      throw new TaskExecutionError(
+        'java.lang.SecurityException: grantRuntimePermission: Neither user 2000 nor current process has android.permission.GRANT_RUNTIME_PERMISSIONS',
+        'RUNTIME_PERMISSION_GRANT_FAILED',
+      )
+    }
+    if (command === 'shell am start com.morphoinc.videopostprocessor/.MainActivity') {
+      this.activityStarted = true
+      return this.result('Starting: Intent')
+    }
+    if (command === 'shell dumpsys window windows') {
+      if (!this.activityStarted) return this.result('mCurrentFocus=Window{abc u0 com.android.launcher/.Launcher}')
+      if (this.dialogStage === 'runtime-permission') {
+        return this.result('mCurrentFocus=Window{abc u0 com.android.permissioncontroller/com.android.permissioncontroller.permission.ui.GrantPermissionsActivity}')
+      }
+      if (this.dialogStage === 'storage-warning') {
+        return this.result('mCurrentFocus=Window{abc u0 com.android.permissioncontroller/com.oplusos.permissioncontroller.permission.ui.OplusCompatibilityAlertActivity}')
+      }
+      return this.result('mCurrentFocus=Window{abc u0 com.morphoinc.videopostprocessor/com.morphoinc.videopostprocessor.MainActivity}')
+    }
+    if (command === 'exec-out uiautomator dump /dev/tty') {
+      return this.result(this.dialogStage === 'storage-warning'
+        ? fixture('oplus-coloros-storage-compatibility-warning.xml')
+        : fixture('oplus-coloros-runtime-permissions.xml'))
+    }
+    if (command === 'shell pm path com.android.permissioncontroller') {
+      return this.result('package:/system/priv-app/PermissionController/PermissionController.apk')
+    }
+    if (command.startsWith('shell input tap ')) {
+      if (this.dialogStage === 'runtime-permission') {
+        this.permissionsGranted = true
+        this.dialogStage = 'storage-warning'
+      } else if (this.dialogStage === 'storage-warning') {
+        this.dialogStage = 'main'
+      }
+      return this.result('')
+    }
+    if (command === 'shell dumpsys package com.morphoinc.videopostprocessor') {
+      return this.result(`
+        runtime permissions:
+          android.permission.CAMERA: granted=${this.permissionsGranted}
+          android.permission.RECORD_AUDIO: granted=${this.permissionsGranted}
+      `)
+    }
+    return this.result('Success')
+  }
+
+  private result(stdout: string): ProcessResult {
+    return { code: 0, stdout, stderr: '' }
+  }
+}
+
+describe('DefaultAndroidAppPreparer', () => {
+  it('installs before granting permissions and launches only after verification', async () => {
+    const base = findApkExecutionProtocol('com.morphoinc.videopostprocessor')!
+    const protocol: ApkExecutionProtocol = {
+      ...base,
+      install: {
+        ...base.install,
+        dialogAutomation: { ...base.install.dialogAutomation!, mode: 'none' },
+      },
+      launch: { ...base.launch, warmupBeforeTransferMs: 1 },
+    }
+    const device = new PreparationFakeDevice()
+    const events: string[] = []
+    const requestedSerials: string[] = []
+    const preparer = new DefaultAndroidAppPreparer({
+      createDevice: (serial) => {
+        requestedSerials.push(serial)
+        return device
+      },
+      captureScreenshot: async () => undefined,
+    })
+
+    const receipt = await preparer.prepareApplication({
+      deviceSerial: 'serial-1',
+      deviceManufacturer: 'vivo',
+      deviceModel: 'V2324A',
+      apkPath: '/tmp/morpho.apk',
+      protocol,
+      diagnosticsDirectory: '/tmp/not-used',
+      signal: new AbortController().signal,
+      onEvent: (event) => events.push(event.message),
+    })
+
+    const commands = device.calls.map((args) => args.join(' '))
+    const installIndex = commands.indexOf('install /tmp/morpho.apk')
+    const grantIndex = commands.indexOf('shell pm grant com.morphoinc.videopostprocessor android.permission.CAMERA')
+    const verifyIndex = commands.indexOf('shell dumpsys package com.morphoinc.videopostprocessor')
+    const launchIndex = commands.indexOf('shell am start com.morphoinc.videopostprocessor/.MainActivity')
+
+    expect(installIndex).toBeGreaterThan(-1)
+    expect(grantIndex).toBeGreaterThan(installIndex)
+    expect(verifyIndex).toBeGreaterThan(grantIndex)
+    expect(launchIndex).toBeGreaterThan(verifyIndex)
+    expect(receipt).toMatchObject({
+      packageName: 'com.morphoinc.videopostprocessor',
+      cleanInstalled: true,
+      grantedPermissions: [
+        'android.permission.CAMERA',
+        'android.permission.RECORD_AUDIO',
+      ],
+      handledDialogs: [],
+    })
+    expect(events).toContain('相机权限验证通过')
+    expect(events).toContain('录音权限验证通过')
+    expect(requestedSerials).toEqual(['serial-1'])
+  })
+
+  it('falls back to the strict permission dialog when ColorOS forbids shell pm grant', async () => {
+    const protocol = findApkExecutionProtocol('com.morphoinc.videopostprocessor')!
+    const device = new OplusPermissionFallbackDevice()
+    const events: string[] = []
+    const preparer = new DefaultAndroidAppPreparer({
+      createDevice: () => device,
+      captureScreenshot: async () => undefined,
+    })
+
+    const receipt = await preparer.prepareApplication({
+      deviceSerial: 'DE45R8ZPSGIBQOTC',
+      deviceManufacturer: 'OPPO',
+      deviceModel: 'PJV110',
+      apkPath: '/tmp/morpho.apk',
+      protocol,
+      diagnosticsDirectory: '/tmp/not-used',
+      signal: new AbortController().signal,
+      onEvent: (event) => events.push(event.message),
+    })
+
+    expect(receipt.grantedPermissions).toEqual([
+      'android.permission.CAMERA',
+      'android.permission.RECORD_AUDIO',
+    ])
+    expect(receipt.handledDialogs).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        profileId: 'android-runtime-permission-v1',
+        action: 'allow-permission',
+      }),
+      expect.objectContaining({
+        profileId: 'oplus-storage-compatibility-warning-v1',
+        action: 'dismiss-compatibility-warning',
+      }),
+    ]))
+    expect(device.calls).toContainEqual([
+      'shell', 'input', 'tap', '540', '2004',
+    ])
+    expect(device.calls).toContainEqual([
+      'shell', 'input', 'tap', '540', '2205',
+    ])
+    expect(events.some((message) => message.includes('切换到严格权限弹窗兜底'))).toBe(true)
+  })
+})

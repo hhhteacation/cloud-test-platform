@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<hierarchy rotation="0">
+  <node index="0" text="Morpho VideoStabilizer" resource-id="com.android.permissioncontroller:id/permission_message" class="android.widget.TextView" package="com.android.permissioncontroller" clickable="false" checkable="false" checked="false" bounds="[100,400][980,500]" />
+  <node index="1" text="允许 Morpho VideoStabilizer 拍摄照片和录制视频吗？" resource-id="com.android.permissioncontroller:id/permission_message" class="android.widget.TextView" package="com.android.permissioncontroller" clickable="false" checkable="false" checked="false" bounds="[100,520][980,720]" />
+  <node index="2" text="仅使用期间允许" resource-id="com.android.permissioncontroller:id/permission_allow_foreground_only_button" class="android.widget.Button" package="com.android.permissioncontroller" clickable="true" checkable="false" checked="false" bounds="[120,1200][960,1320]" />
+</hierarchy>

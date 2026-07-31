@@ -1,0 +1,25 @@
+package com.sdktest.integration;
+
+import com.sdktest.platform.VendorSdkBridge;
+
+/**
+ * 真实 SDK 接入模板。复制到 app 源码或独立 Android Library 后，根据厂商 SDK API 实现。
+ * 注意：onCompleted() 之前必须由真实 SDK 在 outputPath 生成非空、可播放的 MP4。
+ */
+public final class VendorSdkBridgeImpl implements VendorSdkBridge {
+    @Override
+    public void process(String inputPath, String outputPath, Callback callback) {
+        callback.onFailed(
+            "SDK_INITIALIZE_FAILED",
+            "请根据真实 SDK 文档实现 VendorSdkBridgeImpl；禁止复制输入文件冒充处理输出"
+        );
+    }
+
+    @Override public void cancel() {
+        // 调用真实 SDK 的取消方法。
+    }
+
+    @Override public void release() {
+        // 释放真实 SDK 资源。
+    }
+}

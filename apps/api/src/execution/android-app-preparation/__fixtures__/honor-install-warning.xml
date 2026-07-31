@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<hierarchy rotation="0">
+  <node index="0" text="Morpho VideoStabilizer" resource-id="com.hihonor.systemmanager:id/app_name" class="android.widget.TextView" package="com.hihonor.systemmanager" clickable="false" checkable="false" checked="false" bounds="[80,200][1000,300]" />
+  <node index="1" text="来历不明的应用" resource-id="com.hihonor.systemmanager:id/title" class="android.widget.TextView" package="com.hihonor.systemmanager" clickable="false" checkable="false" checked="false" bounds="[80,320][1000,420]" />
+  <node index="2" text="安装该应用可能会损害您的手机和个人数据" resource-id="com.hihonor.systemmanager:id/message" class="android.widget.TextView" package="com.hihonor.systemmanager" clickable="false" checkable="false" checked="false" bounds="[80,430][1000,650]" />
+  <node index="3" text="我已了解风险" resource-id="com.hihonor.systemmanager:id/confirm" class="android.widget.CheckBox" package="com.hihonor.systemmanager" clickable="true" checkable="true" checked="false" bounds="[100,1500][600,1600]" />
+  <node index="4" text="继续" resource-id="com.hihonor.systemmanager:id/continue_button" class="android.widget.Button" package="com.hihonor.systemmanager" clickable="true" checkable="false" checked="false" bounds="[700,1700][1000,1820]" />
+</hierarchy>

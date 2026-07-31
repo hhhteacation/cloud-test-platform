@@ -1,0 +1,736 @@
+:root {
+  background: #f5f7fa;
+  color: #1f2937;
+  font-synthesis: none;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  min-width: 1120px;
+  margin: 0;
+  background: #f5f7fa;
+}
+
+.app-shell {
+  min-height: 100vh;
+}
+
+.app-sider {
+  position: relative;
+  border-right: 1px solid #edf0f5;
+  box-shadow: 2px 0 8px rgba(15, 23, 42, 0.03);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  height: 68px;
+  gap: 11px;
+  padding: 0 22px;
+  color: #0f172a;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.brand-mark {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  background: linear-gradient(145deg, #2f88ff, #0958d9);
+  color: white;
+  font-size: 19px;
+}
+
+.project-switcher {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 5px 14px 18px;
+  padding: 11px 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  color: #4b5563;
+  font-size: 13px;
+}
+
+.project-switcher .chevron {
+  margin-left: auto;
+}
+
+.ant-menu {
+  border-inline-end: 0 !important;
+}
+
+.ant-menu-item {
+  width: calc(100% - 20px) !important;
+  margin-inline: 10px !important;
+}
+
+.ant-menu-item-selected {
+  font-weight: 600;
+}
+
+.sider-bottom {
+  position: absolute;
+  right: 18px;
+  bottom: 22px;
+  left: 18px;
+  display: grid;
+  gap: 12px;
+}
+
+.help-card {
+  display: grid;
+  gap: 5px;
+  padding: 14px;
+  border-radius: 10px;
+  background: #f0f7ff;
+  color: #1677ff;
+  font-size: 12px;
+}
+
+.top-header {
+  display: flex;
+  align-items: center;
+  height: 68px;
+  gap: 26px;
+  padding: 0 28px;
+  border-bottom: 1px solid #edf0f5;
+  background: white;
+}
+
+.top-nav {
+  display: flex;
+  flex: 1;
+  justify-content: center;
+  gap: 38px;
+  color: #667085;
+  font-size: 14px;
+}
+
+.top-nav span {
+  position: relative;
+  display: inline-block;
+  padding: 23px 4px 5px;
+}
+
+.top-nav .active {
+  border-bottom: none;
+  color: #1677ff;
+  font-weight: 600;
+}
+.top-nav .active::after {
+  content: '';
+  position:absolute;
+  left: 0;
+  right: 0;
+  bottom: 12px;
+  height: 2px;
+  background: #1677ff;
+}
+
+.user-area {
+  color: #667085;
+}
+
+.top-status {
+  color: #16a34a;
+  font-size: 12px;
+}
+
+.main-content {
+  width: 100%;
+  max-width: 1600px;
+  margin: 0 auto;
+  padding: 22px 30px 40px;
+}
+
+.page {
+  margin-top: 22px;
+}
+
+.page-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 22px;
+}
+
+.page-heading h2 {
+  margin: 3px 0 5px !important;
+  font-size: 26px !important;
+}
+
+.page-heading .ant-typography {
+  margin-bottom: 0;
+}
+
+.notice-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 18px;
+  border: 1px solid #dbeafe;
+  background: linear-gradient(90deg, #f0f7ff, #fff);
+}
+
+.notice-card .ant-card-body {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.notice-icon {
+  color: #1677ff;
+  font-size: 25px;
+}
+
+.notice-card p {
+  margin: 5px 0 0;
+}
+
+.stats-row {
+  margin-bottom: 18px;
+}
+
+.stats-row .ant-card {
+  height: 120px;
+}
+
+.ant-statistic-title {
+  color: #667085 !important;
+}
+
+.ant-statistic-content {
+  font-weight: 700;
+}
+
+.latest-task {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.task-avatar,
+.file-icon {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 8px;
+  background: #eaf3ff;
+  color: #1677ff;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.task-summary,
+.task-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.task-summary {
+  min-width: 280px;
+  flex: 1;
+}
+
+.task-progress {
+  width: 120px;
+}
+
+.cell-sub {
+  display: block;
+  font-size: 12px;
+}
+
+.capability {
+  padding: 10px 0;
+  color: #4b5563;
+}
+
+.capability svg,
+.list-check,
+.check-ok {
+  margin-right: 8px;
+  color: #16a34a;
+}
+
+.table-card,
+.form-card,
+.device-list-card,
+.log-card {
+  margin-bottom: 18px;
+}
+
+.filter-bar {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.task-cell {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+}
+
+.table-icon {
+  margin-right: 8px;
+  color: #1677ff;
+}
+
+.ant-table-thead > tr > th {
+  color: #667085 !important;
+  font-size: 13px;
+}
+
+.ant-table-tbody > tr > td {
+  padding: 15px 16px !important;
+}
+
+.asset-uploader {
+  background: #fafcff;
+}
+
+.asset-uploader .ant-upload-drag-icon {
+  color: #1677ff !important;
+}
+
+.apk-selector {
+  display: grid;
+  gap: 12px;
+}
+
+.apk-selector-action {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.apk-file-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 14px 16px;
+  border: 1px solid #d9e8ff;
+  border-radius: 8px;
+  background: #f7fbff;
+}
+
+.apk-file-icon {
+  display: grid;
+  flex: 0 0 42px;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border-radius: 8px;
+  color: #1677ff;
+  font-size: 22px;
+  background: #e6f4ff;
+}
+
+.apk-file-info {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: 5px;
+}
+
+.apk-upload-note {
+  margin-top: 2px;
+}
+
+.asset-preview {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  margin-top: 12px;
+}
+
+.asset-preview video {
+  width: 170px;
+  height: 100px;
+  border-radius: 6px;
+  background: #111827;
+  object-fit: cover;
+}
+
+.asset-preview > div {
+  display: grid;
+  gap: 7px;
+}
+
+.device-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 13px 0;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.device-option .ant-checkbox-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.device-option.disabled {
+  opacity: 0.55;
+}
+
+.form-actions {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.execution-overview {
+  margin-bottom: 18px;
+}
+
+.execution-overview .ant-card-body {
+  padding: 32px 40px;
+}
+
+.execution-overview-row {
+  width: 100%;
+}
+
+.overview-progress-content {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+}
+
+.overview-progress-text {
+  display: flex;
+  flex-direction: column;
+}
+
+.overview-progress-text .ant-typography {
+  margin-bottom: 0;
+}
+
+.device-run-item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  gap: 10px;
+  padding: 15px 4px;
+  border: 0;
+  border-bottom: 1px solid #f0f0f0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.device-run-item:hover,
+.device-run-item.selected {
+  background: #f0f7ff;
+}
+
+.device-run-icon {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: #e6f4ff;
+  color: #1677ff;
+  font-weight: 700;
+}
+
+.device-run-info {
+  display: grid;
+  flex: 1;
+  gap: 3px;
+}
+
+.device-run-info .ant-progress {
+  margin: 0;
+}
+
+.check-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  min-height: 210px;
+  gap: 10px;
+}
+
+.check-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: #f8fafc;
+}
+
+.check-item .ant-typography {
+  margin-left: auto;
+  font-size: 11px;
+}
+
+.check-running {
+  color: #1677ff;
+}
+
+.empty-state {
+  display: grid;
+  grid-column: 1 / -1;
+  place-items: center;
+  gap: 10px;
+  color: #98a2b3;
+}
+
+.terminal {
+  min-height: 170px;
+  max-height: 240px;
+  overflow: auto;
+  margin-top: 10px;
+  padding: 14px;
+  border-radius: 7px;
+  background: #111827;
+  color: #d1fae5;
+  font: 12px/2 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.terminal-time {
+  color: #64748b;
+}
+
+.terminal-live {
+  margin-top: 6px;
+  color: #60a5fa;
+}
+
+.report-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 18px;
+}
+
+.report-banner .ant-card-body {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.report-banner h3 {
+  margin: 7px 0 !important;
+}
+
+.report-checks {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 36px;
+}
+
+.report-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+}
+
+.report-check .check-line {
+  flex: 1;
+  height: 1px;
+  background: #edf0f5;
+}
+
+.report-note {
+  color: #667085;
+}
+
+.report-note svg {
+  margin-right: 8px;
+  color: #f59e0b;
+}
+
+@media (max-width: 1280px) {
+  .main-content {
+    padding-inline: 20px;
+  }
+
+  .top-nav {
+    gap: 20px;
+  }
+
+  .latest-task {
+    gap: 8px;
+  }
+
+  .task-summary {
+    min-width: 220px;
+  }
+}
+
+/* 真实 APK + MP4 任务新增区域 */
+.mode-alert,
+.output-missing {
+  margin-bottom: 18px;
+}
+
+.upload-progress-card {
+  max-width: 980px;
+  margin: 0 auto 18px;
+}
+
+.phase-card {
+  margin-bottom: 18px;
+}
+
+.phase-list {
+  display: grid;
+  gap: 4px;
+}
+
+.phase-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 10px;
+  border-left: 2px solid #e5e7eb;
+  color: #667085;
+}
+
+.phase-item.current {
+  border-left-color: #1677ff;
+  border-radius: 0 6px 6px 0;
+  background: #f0f7ff;
+  color: #1677ff;
+  font-weight: 600;
+}
+
+.check-failed {
+  color: #dc2626;
+}
+
+.check-item.failed {
+  background: #fff1f0;
+}
+
+.device-meta {
+  margin-bottom: 16px;
+}
+
+.failure-alert {
+  margin-bottom: 16px;
+}
+
+.output-card {
+  margin-bottom: 18px;
+}
+
+.output-video {
+  display: block;
+  width: 100%;
+  max-height: 460px;
+  border-radius: 8px;
+  background: #111827;
+}
+
+.report-terminal {
+  min-height: 120px;
+  max-height: 360px;
+}
+
+.report-note-inline {
+  margin-top: 12px;
+  color: #667085;
+}
+
+.report-note-inline svg {
+  margin-right: 8px;
+  color: #f59e0b;
+}
+
+.report-artifact-actions {
+  margin-top: 16px;
+}
+
+.field-error-alert,
+.device-connection-alert,
+.apk-protocol-alert {
+  margin-top: 12px;
+}
+
+.submit-error-alert {
+  max-width: 960px;
+  margin: 16px auto 0;
+}
+
+/* 平台模式选择与多设备报告 */
+.project-switcher {
+  width: calc(100% - 28px);
+  background: #fff;
+  cursor: pointer;
+}
+
+.project-switcher:hover {
+  border-color: #91caff;
+  color: #1677ff;
+}
+
+.planned-platform-page .ant-result-icon {
+  color: #1677ff;
+}
+
+.report-matrix-card .ant-card-body {
+  padding: 0;
+}
+
+.report-matrix-card .ant-table-cell {
+  white-space: nowrap;
+}
+
+.matrix-status {
+  font-size: 18px;
+}
+
+.matrix-status.passed {
+  color: #16a34a;
+}
+
+.matrix-status.failed {
+  color: #dc2626;
+}
+
+.matrix-status.blocked {
+  color: #94a3b8;
+}
+
+.matrix-status.running {
+  color: #1677ff;
+}
+
+.matrix-status.missing {
+  color: #cbd5e1;
+}
+
+.drawer-section {
+  margin-bottom: 24px;
+}
+
+.device-output-panel {
+  display: grid;
+  gap: 16px;
+}
+
+.device-output-panel .ant-btn {
+  justify-self: start;
+}

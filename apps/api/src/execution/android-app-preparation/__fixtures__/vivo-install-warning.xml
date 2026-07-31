@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<hierarchy rotation="0">
+  <node index="0" text="Morpho VideoStabilizer" resource-id="com.vivo.packageinstaller:id/app_name" class="android.widget.TextView" package="com.vivo.packageinstaller" clickable="false" checkable="false" checked="false" bounds="[80,200][1000,300]" />
+  <node index="1" text="安全守护提示您" resource-id="com.vivo.packageinstaller:id/title" class="android.widget.TextView" package="com.vivo.packageinstaller" clickable="false" checkable="false" checked="false" bounds="[80,320][1000,420]" />
+  <node index="2" text="这是外部来源应用，非vivo官方应用商店下载" resource-id="com.vivo.packageinstaller:id/message" class="android.widget.TextView" package="com.vivo.packageinstaller" clickable="false" checkable="false" checked="false" bounds="[80,430][1000,650]" />
+  <node index="3" text="继续" resource-id="com.vivo.packageinstaller:id/continue_button" class="android.widget.Button" package="com.vivo.packageinstaller" clickable="true" checkable="false" checked="false" bounds="[700,1700][1000,1820]" />
+</hierarchy>
