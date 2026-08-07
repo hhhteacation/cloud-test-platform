@@ -3,9 +3,9 @@ import { TaskExecutionError } from '../execution-errors.js'
 import { delay } from '../file-utils.js'
 import { createDialogInteractionState } from './contracts.js'
 import type { HandledDialog, PreparationEvent } from './contracts.js'
-import { RuntimePermissionManager } from './runtime-permissions.js'
+import type { RuntimePermissionManager } from './runtime-permissions.js'
 import { DialogProgressTracker } from './dialog-progress.js'
-import { SystemDialogController } from './system-dialog-controller.js'
+import type { SystemDialogController } from './system-dialog-controller.js'
 
 interface RuntimePermissionDialogBaseRequest {
   manufacturer: string
@@ -21,6 +21,60 @@ interface RuntimePermissionDialogRequest extends RuntimePermissionDialogBaseRequ
   permissions: readonly string[]
 }
 
+type RuntimePermissionVerifier = Pick<
+  RuntimePermissionManager,
+  'areAllGranted' | 'verifyAll'
+>
+
+type RuntimePermissionDialogInspector = Pick<
+  SystemDialogController,
+  'inspectAndHandle' | 'saveTimeoutDiagnostics'
+>
+
+function runtimePermissionDialogOptions(request: RuntimePermissionDialogBaseRequest) {
+  return {
+    manufacturer: request.manufacturer,
+    packageName: request.packageName,
+    applicationLabel: request.applicationLabel,
+    phase: 'runtime-permission' as const,
+    // The controller still gates every action by allowedPhases. Passing the
+    // complete protocol set allows phase-independent block Profiles to classify
+    // a known unsafe page without enabling install actions in this phase.
+    profileIds: request.automation.profileIds,
+    diagnosticsDirectory: request.diagnosticsDirectory,
+    maxActions: request.automation.maxActions,
+    signal: request.signal,
+  }
+}
+
+function manualActionFailure(summary: string) {
+  // The currently supported block Profile represents an unfinished install
+  // authorization. Preserve that business cause even if the page is observed
+  // later by the runtime-permission coordinator.
+  return new TaskExecutionError(summary, 'INSTALL_USER_ACTION_REQUIRED')
+}
+
+function stableDialogFailure(
+  inspection: { kind: 'unrecognized' | 'waiting' },
+  residual: boolean,
+) {
+  if (inspection.kind === 'waiting') {
+    return new TaskExecutionError(
+      residual
+        ? '已执行残留权限弹窗白名单操作，但界面在宽限期内没有发生可验证迁移'
+        : '已执行权限弹窗白名单操作，但界面在宽限期内没有发生可验证迁移',
+      'RUNTIME_PERMISSION_DIALOG_TIMEOUT',
+    )
+  }
+
+  return new TaskExecutionError(
+    residual
+      ? '检测到残留权限控制器窗口，但界面未满足严格权限白名单，平台拒绝忽略或自动点击'
+      : '检测到权限控制器窗口，但界面未满足严格权限白名单，平台拒绝自动点击',
+    'RUNTIME_PERMISSION_DIALOG_UNRECOGNIZED',
+  )
+}
+
 /**
  * Handles only the runtime-permission fallback after an OEM explicitly rejects
  * shell `pm grant`. It never broadens install-dialog matching or changes global
@@ -28,8 +82,8 @@ interface RuntimePermissionDialogRequest extends RuntimePermissionDialogBaseRequ
  */
 export class RuntimePermissionDialogCoordinator {
   constructor(
-    private readonly permissions: RuntimePermissionManager,
-    private readonly dialogs: SystemDialogController,
+    private readonly permissions: RuntimePermissionVerifier,
+    private readonly dialogs: RuntimePermissionDialogInspector,
   ) {}
 
   /**
@@ -56,16 +110,10 @@ export class RuntimePermissionDialogCoordinator {
     )
 
     while (Date.now() - startedAt < observationBudgetMs) {
-      const inspection = await this.dialogs.inspectAndHandle({
-        manufacturer: request.manufacturer,
-        packageName: request.packageName,
-        applicationLabel: request.applicationLabel,
-        phase: 'runtime-permission',
-        profileIds: ['android-runtime-permission-v1'],
-        diagnosticsDirectory: request.diagnosticsDirectory,
-        maxActions: request.automation.maxActions,
-        signal: request.signal,
-      }, interactionState)
+      const inspection = await this.dialogs.inspectAndHandle(
+        runtimePermissionDialogOptions(request),
+        interactionState,
+      )
 
       if (inspection.kind === 'none') {
         return handledDialogs
@@ -87,43 +135,23 @@ export class RuntimePermissionDialogCoordinator {
           progress: 22,
           message: inspection.block.summary,
         })
-        throw new TaskExecutionError(
-          inspection.block.summary,
-          'RUNTIME_PERMISSION_GRANT_FAILED',
-        )
+        throw manualActionFailure(inspection.block.summary)
       }
 
       const progress = dialogProgress.observe(inspection)
       if (progress.elapsedMs >= graceMs) {
-        await this.dialogs.saveTimeoutDiagnostics({
-          manufacturer: request.manufacturer,
-          packageName: request.packageName,
-          applicationLabel: request.applicationLabel,
-        phase: 'runtime-permission',
-          profileIds: ['android-runtime-permission-v1'],
-          diagnosticsDirectory: request.diagnosticsDirectory,
-          maxActions: request.automation.maxActions,
-          signal: request.signal,
-        })
-        throw new TaskExecutionError(
-          '检测到残留权限控制器窗口，但界面未满足严格权限白名单，平台拒绝忽略或自动点击',
-          'RUNTIME_PERMISSION_DIALOG_UNRECOGNIZED',
+        await this.dialogs.saveTimeoutDiagnostics(
+          runtimePermissionDialogOptions(request),
         )
+        throw stableDialogFailure(inspection, true)
       }
 
       await delay(request.automation.pollIntervalMs, request.signal)
     }
 
-    await this.dialogs.saveTimeoutDiagnostics({
-      manufacturer: request.manufacturer,
-      packageName: request.packageName,
-      applicationLabel: request.applicationLabel,
-        phase: 'runtime-permission',
-      profileIds: ['android-runtime-permission-v1'],
-      diagnosticsDirectory: request.diagnosticsDirectory,
-      maxActions: request.automation.maxActions,
-      signal: request.signal,
-    })
+    await this.dialogs.saveTimeoutDiagnostics(
+      runtimePermissionDialogOptions(request),
+    )
     throw new TaskExecutionError(
       '等待残留 Android 权限弹窗消失超过协议时限',
       'RUNTIME_PERMISSION_DIALOG_TIMEOUT',
@@ -159,16 +187,10 @@ export class RuntimePermissionDialogCoordinator {
         return handledDialogs
       }
 
-      const inspection = await this.dialogs.inspectAndHandle({
-        manufacturer: request.manufacturer,
-        packageName: request.packageName,
-        applicationLabel: request.applicationLabel,
-        phase: 'runtime-permission',
-        profileIds: ['android-runtime-permission-v1'],
-        diagnosticsDirectory: request.diagnosticsDirectory,
-        maxActions: request.automation.maxActions,
-        signal: request.signal,
-      }, interactionState)
+      const inspection = await this.dialogs.inspectAndHandle(
+        runtimePermissionDialogOptions(request),
+        interactionState,
+      )
 
       if (inspection.kind === 'handled') {
         handledDialogs.push(inspection.dialog)
@@ -178,23 +200,20 @@ export class RuntimePermissionDialogCoordinator {
           progress: 22,
           message: `已通过 ${inspection.dialog.profileId} 自动确认相机和麦克风权限`,
         })
+      } else if (inspection.kind === 'manual-action-required') {
+        request.onEvent({
+          phase: 'granting_permissions',
+          progress: 22,
+          message: inspection.block.summary,
+        })
+        throw manualActionFailure(inspection.block.summary)
       } else if (inspection.kind === 'unrecognized' || inspection.kind === 'waiting') {
         const progress = dialogProgress.observe(inspection)
         if (progress.elapsedMs >= graceMs) {
-          await this.dialogs.saveTimeoutDiagnostics({
-            manufacturer: request.manufacturer,
-            packageName: request.packageName,
-            applicationLabel: request.applicationLabel,
-        phase: 'runtime-permission',
-            profileIds: ['android-runtime-permission-v1'],
-            diagnosticsDirectory: request.diagnosticsDirectory,
-            maxActions: request.automation.maxActions,
-            signal: request.signal,
-          })
-          throw new TaskExecutionError(
-            '检测到权限控制器窗口，但界面未满足严格权限白名单，平台拒绝自动点击',
-            'RUNTIME_PERMISSION_DIALOG_UNRECOGNIZED',
+          await this.dialogs.saveTimeoutDiagnostics(
+            runtimePermissionDialogOptions(request),
           )
+          throw stableDialogFailure(inspection, false)
         }
       } else {
         dialogProgress.reset()
@@ -203,16 +222,9 @@ export class RuntimePermissionDialogCoordinator {
       await delay(request.automation.pollIntervalMs, request.signal)
     }
 
-    await this.dialogs.saveTimeoutDiagnostics({
-      manufacturer: request.manufacturer,
-      packageName: request.packageName,
-      applicationLabel: request.applicationLabel,
-        phase: 'runtime-permission',
-      profileIds: ['android-runtime-permission-v1'],
-      diagnosticsDirectory: request.diagnosticsDirectory,
-      maxActions: request.automation.maxActions,
-      signal: request.signal,
-    })
+    await this.dialogs.saveTimeoutDiagnostics(
+      runtimePermissionDialogOptions(request),
+    )
     throw new TaskExecutionError(
       '等待 Android 运行时权限确认超过协议时限',
       'RUNTIME_PERMISSION_DIALOG_TIMEOUT',
