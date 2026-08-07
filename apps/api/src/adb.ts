@@ -17,12 +17,11 @@ import { BoundedProcessRunner, type ProcessRunner } from './process.js'
 import { TaskExecutionError } from './execution/execution-errors.js'
 import { getCheckName } from './execution/check-names.js'
 import { delay, sha256File } from './execution/file-utils.js'
-import { AdbDeviceClient } from './execution/adb-client.js'
+import { AdbDeviceClient, type AdbObservation } from './execution/adb-client.js'
 import { AdbStreams, type LogcatStreamEvent } from './execution/adb-streams.js'
 import { TaskProcessRegistry } from './execution/process-registry.js'
 import {
-  buildMorphoStartupProbeArguments,
-  parseMorphoStartupProbe,
+  collectMorphoStartupInspection,
   waitForMorphoStartup,
 } from './execution/morpho-startup.js'
 import {
@@ -78,12 +77,71 @@ export class AdbWorker {
   }
 }
 
-class AdbRunExecutor {
+export interface AdbExecutionDevice {
+  connectionStatus(): Promise<'online' | 'offline' | 'unauthorized'>
+  run(args: string[], signal: AbortSignal, timeoutMs?: number, code?: string): Promise<Awaited<ReturnType<AdbDeviceClient['run']>>>
+  observe(args: string[], signal: AbortSignal, timeoutMs?: number, capture?: { captureStdoutPath?: string; captureStderrPath?: string }): Promise<Awaited<ReturnType<AdbDeviceClient['observe']>>>
+  stat(remotePath: string, signal: AbortSignal): Promise<AdbObservation<number>>
+  exists(remotePath: string, signal: AbortSignal): Promise<AdbObservation<boolean>>
+  isPackageRunning(packageName: string, signal: AbortSignal): Promise<AdbObservation<boolean>>
+  isPackageInstalled(packageName: string, signal: AbortSignal): Promise<boolean>
+}
+
+export interface AdbExecutionStreams {
+  startLogcat(
+    taskId: string,
+    targetPath: string,
+    signal: AbortSignal,
+    tags: readonly string[],
+    onLine: (line: string) => void,
+    onEvent?: (event: LogcatStreamEvent) => void,
+    maxBytes?: number,
+  ): Promise<() => Promise<void>>
+  captureLogcatSnapshot(taskId: string, targetPath: string, signal: AbortSignal, maxBytes: number): Promise<void>
+  captureScreenshot(taskId: string, targetPath: string, signal: AbortSignal): Promise<void>
+}
+
+export interface AdbRunExecutorDependencies {
+  createDevice?: (adbPath: string, serial: string, runner: ProcessRunner) => AdbExecutionDevice
+  createStreams?: (adbPath: string, serial: string, processes: TaskProcessRegistry, options: { maxLogBytes: number; killGraceMs: number }) => AdbExecutionStreams
+  createAppPreparer?: (device: AdbExecutionDevice, captureScreenshot: (targetPath: string, signal: AbortSignal) => Promise<void>) => AndroidAppPreparer
+}
+
+export function parseCarrierResult(content: string): AndroidResult {
+  if (!content.trim()) {
+    throw new TaskExecutionError('APK 返回的 result.json 为空', 'RESULT_INVALID')
+  }
+
+  let result: unknown
+  try {
+    result = JSON.parse(content)
+  } catch (error) {
+    throw new TaskExecutionError(
+      `APK 返回的 result.json 不是有效 JSON：${error instanceof Error ? error.message : String(error)}`,
+      'RESULT_INVALID',
+    )
+  }
+
+  if (
+    !result
+    || typeof result !== 'object'
+    || Array.isArray(result)
+    || typeof (result as { taskId?: unknown }).taskId !== 'string'
+    || !['passed', 'failed'].includes((result as { status?: unknown }).status as string)
+  ) {
+    throw new TaskExecutionError('APK 返回的 result.json 缺少有效的 taskId 或 status', 'RESULT_INVALID')
+  }
+
+  return result as AndroidResult
+}
+
+
+export class AdbRunExecutor {
   readonly taskId: string
   private readonly runId: string
   private readonly processes: TaskProcessRegistry
-  private readonly device: AdbDeviceClient
-  private readonly streams: AdbStreams
+  private readonly device: AdbExecutionDevice
+  private readonly streams: AdbExecutionStreams
   private readonly appPreparer: AndroidAppPreparer
 
   constructor(
@@ -92,16 +150,24 @@ class AdbRunExecutor {
     private readonly mediaIntegrityChecker: MediaIntegrityChecker,
     private readonly appConfig: AppConfig,
     private readonly processRunner: ProcessRunner,
+    private readonly dependencies: AdbRunExecutorDependencies = {},
   ) {
     this.taskId = execution.taskId
     this.runId = execution.runId
     this.processes = new TaskProcessRegistry(appConfig.processKillGraceMs)
-    this.device = new AdbDeviceClient(appConfig.adbPath, execution.deviceSerial, processRunner)
-    this.streams = new AdbStreams(appConfig.adbPath, execution.deviceSerial, this.processes, {
+    this.device = dependencies.createDevice?.(appConfig.adbPath, execution.deviceSerial, processRunner)
+      ?? new AdbDeviceClient(appConfig.adbPath, execution.deviceSerial, processRunner)
+    this.streams = dependencies.createStreams?.(appConfig.adbPath, execution.deviceSerial, this.processes, {
+      maxLogBytes: appConfig.maxLogcatBytes,
+      killGraceMs: appConfig.processKillGraceMs,
+    }) ?? new AdbStreams(appConfig.adbPath, execution.deviceSerial, this.processes, {
       maxLogBytes: appConfig.maxLogcatBytes,
       killGraceMs: appConfig.processKillGraceMs,
     })
-    this.appPreparer = new DefaultAndroidAppPreparer({
+    this.appPreparer = dependencies.createAppPreparer?.(
+      this.device,
+      (targetPath, signal) => this.streams.captureScreenshot(this.runId, targetPath, signal),
+    ) ?? new DefaultAndroidAppPreparer({
       createDevice: () => this.device,
       captureScreenshot: (targetPath, signal) => this.streams.captureScreenshot(
         this.runId,
@@ -116,9 +182,10 @@ class AdbRunExecutor {
     this.processes.killChildren(this.runId)
     const packageName = this.processes.packageName(this.runId) || this.execution.apkPackageName
     if (packageName) {
-      void this.processRunner.run(this.appConfig.adbPath, [
-        '-s', this.execution.deviceSerial, 'shell', 'am', 'force-stop', packageName,
-      ]).catch(() => undefined)
+      void this.bestEffortDeviceRun(
+        ['shell', 'am', 'force-stop', packageName],
+        '取消任务时停止 APK 失败',
+      )
     }
   }
 
@@ -161,6 +228,7 @@ class AdbRunExecutor {
     let acceptMorphoStartupEvidence = false
     let morphoBusinessLogStarted = false
     let logcatFatal: TaskExecutionError | undefined
+    let morphoStartupProbeAttempt = 0
 
     const update = (phase: DeviceRunPhase, progress: number, message: string) => {
       this.database.setExecutionState({
@@ -311,14 +379,31 @@ class AdbRunExecutor {
           signal,
           hasBusinessLog: () => morphoBusinessLogStarted,
           getLogcatFailure: () => logcatFatal,
-          inspect: async (remainingMs) => {
-            const probe = await this.adb(
-              buildMorphoStartupProbeArguments(protocol.packageName),
-              signal,
-              remainingMs,
-              'SDK_START_FAILED',
+          inspect: async (remainingMs) => collectMorphoStartupInspection({
+            packageName: protocol.packageName,
+            diagnosticsDirectory,
+            attempt: ++morphoStartupProbeAttempt,
+            remainingMs,
+            signal,
+            runner: {
+              run: (args, probeSignal, timeoutMs, capture) => this.device.observe(
+                args,
+                probeSignal,
+                timeoutMs,
+                {
+                  captureStdoutPath: capture.stdoutPath,
+                  captureStderrPath: capture.stderrPath,
+                },
+              ),
+            },
+          }),
+          onIncompleteObservation: (observation) => {
+            this.database.addLog(
+              taskId,
+              runId,
+              `Morpho 启动探测证据不完整，继续等待业务证据：${observation.summary}`,
+              'warning',
             )
-            return parseMorphoStartupProbe(probe.stdout)
           },
         })
         businessStarted = true
@@ -482,15 +567,17 @@ class AdbRunExecutor {
           this.database.addLog(taskId, runId, `LOGCAT_WRITE_FAILED：${error instanceof Error ? error.message : String(error)}`, 'warning')
         })
       }
-      await this.processRunner.run(this.appConfig.adbPath, [
-        '-s', execution.deviceSerial, 'shell', 'am', 'force-stop', protocol.packageName,
-      ]).catch(() => undefined)
+      await this.bestEffortDeviceRun(
+        ['shell', 'am', 'force-stop', protocol.packageName],
+        '执行结束时停止 APK 失败',
+      )
 
       if (paths) {
         if (protocol.completion.mode === 'result_json') {
-          await this.processRunner.run(this.appConfig.adbPath, [
-            '-s', execution.deviceSerial, 'shell', 'rm', '-rf', paths.remoteTaskRoot,
-          ]).catch(() => undefined)
+          await this.bestEffortDeviceRun(
+            ['shell', 'rm', '-rf', paths.remoteTaskRoot],
+            '清理 APK 远端任务目录失败',
+          )
         } else {
           const cleanupFiles = [...new Set([
             paths.remoteCompletionPath,
@@ -498,9 +585,10 @@ class AdbRunExecutor {
             paths.remoteOutputFile,
             detectedRemoteOutputFile,
           ].filter((value): value is string => Boolean(value)))]
-          await this.processRunner.run(this.appConfig.adbPath, [
-            '-s', execution.deviceSerial, 'shell', 'rm', '-f', ...cleanupFiles,
-          ]).catch(() => undefined)
+          await this.bestEffortDeviceRun(
+            ['shell', 'rm', '-f', ...cleanupFiles],
+            '清理 Morpho 远端临时文件失败',
+          )
         }
       }
 
@@ -543,7 +631,7 @@ class AdbRunExecutor {
     if (!paths.remoteResultFile) throw new TaskExecutionError('APK 协议缺少 result.json 路径', 'RESULT_MISSING')
 
     await this.adb(['pull', paths.remoteResultFile, localResult], signal, 30_000, 'RESULT_MISSING')
-    const result = JSON.parse(await readFile(localResult, 'utf8')) as AndroidResult
+    const result = await this.readCarrierResult(localResult)
     if (result.taskId !== taskId) {
       throw new TaskExecutionError('APK 返回的 taskId 与当前任务不一致', 'RESULT_TASK_MISMATCH')
     }
@@ -552,6 +640,32 @@ class AdbRunExecutor {
       throw new TaskExecutionError(
         result.failureMessage ?? '真实 SDK 视频处理失败',
         result.failureCode ?? 'SDK_PROCESSING_FAILED',
+      )
+    }
+  }
+
+  private async readCarrierResult(localResult: string): Promise<AndroidResult> {
+    let content: string
+    try {
+      content = await readFile(localResult, 'utf8')
+    } catch (error) {
+      throw new TaskExecutionError(
+        `无法读取 APK 返回的 result.json：${error instanceof Error ? error.message : String(error)}`,
+        'RESULT_INVALID',
+      )
+    }
+    return parseCarrierResult(content)
+  }
+
+  private async bestEffortDeviceRun(args: string[], description: string) {
+    try {
+      await this.device.run(args, new AbortController().signal, 30_000, 'DEVICE_CLEANUP_FAILED')
+    } catch (error) {
+      this.database.addLog(
+        this.execution.taskId,
+        this.execution.runId,
+        `${description}：${error instanceof Error ? error.message : String(error)}`,
+        'warning',
       )
     }
   }
@@ -604,12 +718,25 @@ class AdbRunExecutor {
     return this.device.run(args, signal, timeoutMs, code)
   }
 
-  private remoteStat(remotePath: string, signal: AbortSignal) {
-    return this.device.stat(remotePath, signal)
+  private async remoteStat(remotePath: string, signal: AbortSignal) {
+    const observation = await this.device.stat(remotePath, signal)
+    return this.requireObservationValue(observation, -1)
   }
 
-  private remoteExists(remotePath: string, signal: AbortSignal) {
-    return this.device.exists(remotePath, signal)
+  private async remoteExists(remotePath: string, signal: AbortSignal) {
+    const observation = await this.device.exists(remotePath, signal)
+    return this.requireObservationValue(observation, false)
+  }
+
+  private async isPackageRunning(packageName: string, signal: AbortSignal) {
+    const observation = await this.device.isPackageRunning(packageName, signal)
+    return this.requireObservationValue(observation, false)
+  }
+
+  private requireObservationValue<T>(observation: AdbObservation<T>, absentValue: T): T {
+    if (observation.kind === 'present') return observation.value
+    if (observation.kind === 'absent') return absentValue
+    throw observation.error
   }
 
   private async waitForResultJson(
@@ -622,7 +749,10 @@ class AdbRunExecutor {
     const startedAt = Date.now()
     while (Date.now() - startedAt < timeoutMs) {
       if (this.database.isCancelled(taskId)) throw new DOMException('任务已取消', 'AbortError')
-      if (await this.remoteStat(remoteResult, signal) > 0) return
+      // The carrier's result path is the completion marker. Once it exists,
+      // pull it and classify empty/malformed content as RESULT_INVALID instead
+      // of hiding the protocol violation behind a later timeout.
+      if (await this.remoteStat(remoteResult, signal) >= 0) return
 
       if (Date.now() - startedAt > 2_000 && !await this.isPackageRunning(protocol.packageName, signal)) {
         throw new TaskExecutionError('测试 APK 进程已退出，且未生成 result.json', 'APP_CRASHED')
@@ -668,10 +798,6 @@ class AdbRunExecutor {
       `超过 ${Math.round(timeoutMs / 1000)} 秒仍未检测到 Morpho 完成标记`,
       'TASK_TIMEOUT',
     )
-  }
-
-  private isPackageRunning(packageName: string, signal: AbortSignal) {
-    return this.device.isPackageRunning(packageName, signal)
   }
 
   private consumeStructuredEvent(taskId: string, runId: string, line: string) {

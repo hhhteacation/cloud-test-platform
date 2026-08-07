@@ -1,10 +1,15 @@
-import { describe, expect, it, vi } from 'vitest'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { TaskExecutionError } from './execution-errors.js'
 import {
-  buildMorphoStartupProbeArguments,
+  collectMorphoStartupInspection,
   isMorphoBatchServiceRunning,
-  parseMorphoStartupProbe,
+  inspectMorphoStartupProbe,
+  type MorphoStartupProbeResult,
   waitForMorphoStartup,
 } from './morpho-startup.js'
 
@@ -23,38 +28,156 @@ const observation = (condition: 'ready' | 'sleeping' | 'keyguard' | 'secure_lock
 })
 
 const readyState = {
+  kind: 'complete' as const,
   processRunning: true,
   serviceRunning: false,
   readiness: observation('ready'),
 }
 
-describe('Morpho startup handshake', () => {
-  it('uses one bounded shell probe and the shared readiness classifier', () => {
-    const args = buildMorphoStartupProbeArguments('com.morphoinc.videopostprocessor')
-    expect(args.slice(0, 3)).toEqual(['shell', 'sh', '-c'])
-    expect(args.at(-1)).toBe('com.morphoinc.videopostprocessor')
-    expect(args.join(' ')).toContain('dumpsys activity services "$1"')
-    expect(args.join(' ')).toContain('pidof "$1"')
+const defaultProbe = {
+  services: {
+    code: 0,
+    stdout: '* ServiceRecord{123 u0 com.morphoinc.videopostprocessor/.BatchProcessService}',
+    stderr: '',
+  },
+  process: { code: 0, stdout: '1234\n', stderr: '' },
+  power: { code: 0, stdout: 'mWakefulness=Awake\nmInteractive=true', stderr: '' },
+  windowPolicy: { code: 0, stdout: 'mKeyguardShowing=false', stderr: '' },
+} satisfies Record<string, MorphoStartupProbeResult>
 
-    expect(parseMorphoStartupProbe(`
-__MORPHO_SERVICES__
-* ServiceRecord{123 u0 com.morphoinc.videopostprocessor/.BatchProcessService}
-__MORPHO_PROCESS__=1234
-__MORPHO_POWER__
-mWakefulness=Awake
-mInteractive=true
-__MORPHO_POLICY__
-mKeyguardShowing=false
-`)).toEqual({
+function successfulProbe(overrides: Partial<typeof defaultProbe> = {}) {
+  return { ...defaultProbe, ...overrides }
+}
+
+const temporaryDirectories: string[] = []
+
+afterEach(async () => {
+  await Promise.all(temporaryDirectories.splice(0).map((directory) => (
+    rm(directory, { recursive: true, force: true })
+  )))
+})
+
+describe('Morpho startup observation', () => {
+  it('collects scoped commands separately and records replayable Evidence metadata', async () => {
+    const diagnosticsDirectory = await mkdtemp(path.join(tmpdir(), 'morpho-startup-'))
+    temporaryDirectories.push(diagnosticsDirectory)
+    const calls: string[][] = []
+    const results = successfulProbe()
+
+    const inspection = await collectMorphoStartupInspection({
+      packageName: 'com.morphoinc.videopostprocessor',
+      diagnosticsDirectory,
+      attempt: 2,
+      remainingMs: 10_000,
+      signal: new AbortController().signal,
+      runner: {
+        async run(args, _signal, _timeoutMs, capture) {
+          calls.push(args)
+          const section = args.includes('pidof')
+            ? 'process'
+            : args.at(-1) === 'power'
+              ? 'power'
+              : args.at(-1) === 'policy'
+                ? 'windowPolicy'
+                : 'services'
+          const result = results[section]
+          await Promise.all([
+            writeFile(capture.stdoutPath, result.stdout),
+            writeFile(capture.stderrPath, result.stderr),
+          ])
+          return result
+        },
+      },
+    })
+
+    expect(inspection).toMatchObject({ kind: 'complete', serviceRunning: true })
+    expect(calls).toEqual([
+      [
+        'shell',
+        'dumpsys',
+        'activity',
+        'services',
+        'com.morphoinc.videopostprocessor/.BatchProcessService',
+      ],
+      ['shell', 'pidof', 'com.morphoinc.videopostprocessor'],
+      ['shell', 'dumpsys', 'power'],
+      ['shell', 'dumpsys', 'window', 'policy'],
+    ])
+    expect(calls.flat()).not.toContain('grep')
+
+    const metadata = JSON.parse(await readFile(
+      path.join(diagnosticsDirectory, 'morpho-startup', 'probe-02-metadata.json'),
+      'utf8',
+    )) as { commands: Array<{ section: string; stdoutFile: string; durationMs: number }> }
+    expect(metadata.commands.every((command) => command.durationMs >= 0)).toBe(true)
+    expect(metadata.commands.map((command) => command.section)).toEqual([
+      'services',
+      'process',
+      'power',
+      'windowPolicy',
+    ])
+    await expect(readFile(
+      path.join(diagnosticsDirectory, 'morpho-startup', metadata.commands[0]!.stdoutFile),
+      'utf8',
+    )).resolves.toContain('BatchProcessService')
+  })
+
+  it('uses the shared readiness classifier for a complete observation', () => {
+    expect(inspectMorphoStartupProbe(successfulProbe())).toEqual({
+      kind: 'complete',
       processRunning: true,
       serviceRunning: true,
       readiness: expect.objectContaining({ condition: 'ready' }),
     })
   })
 
-  it('rejects incomplete startup probe output instead of guessing device state', () => {
-    expect(() => parseMorphoStartupProbe('__MORPHO_SERVICES__\nno service'))
-      .toThrow('Morpho 启动状态探测输出不完整')
+  it('treats pidof exit code 1 as a valid stopped-process observation', () => {
+    expect(inspectMorphoStartupProbe(successfulProbe({
+      services: { code: 0, stdout: '', stderr: '' },
+      process: { code: 1, stdout: '', stderr: '' },
+    }))).toMatchObject({
+      kind: 'complete',
+      serviceRunning: false,
+      processRunning: false,
+    })
+  })
+
+  it('reports command failures without converting them to SDK business failure', () => {
+    expect(inspectMorphoStartupProbe(successfulProbe({
+      services: { code: 2, stdout: '', stderr: 'dumpsys failed' },
+    }))).toMatchObject({
+      kind: 'incomplete',
+      reason: 'command_failed',
+      missingSections: ['services'],
+    })
+  })
+
+
+  it('classifies a timed-out probe command as incomplete observation', () => {
+    expect(inspectMorphoStartupProbe(successfulProbe({
+      services: { code: -1, stdout: '', stderr: 'command timed out' },
+    }))).toMatchObject({
+      kind: 'incomplete',
+      reason: 'command_failed',
+      missingSections: ['services'],
+    })
+  })
+
+  it('classifies truncated output as incomplete while retaining positive service evidence', () => {
+    expect(inspectMorphoStartupProbe(successfulProbe({
+      power: {
+        code: 0,
+        stdout: 'partial power output',
+        stderr: '',
+        stdoutTruncated: true,
+        stdoutBytes: 4 * 1024 * 1024,
+      },
+    }))).toMatchObject({
+      kind: 'incomplete',
+      reason: 'truncated',
+      missingSections: ['power'],
+      serviceRunning: true,
+    })
   })
 
   it('matches only the exact Morpho BatchProcessService component', () => {
@@ -68,6 +191,102 @@ mKeyguardShowing=false
     expect(isMorphoBatchServiceRunning(
       'com.morphoinc.videopostprocessor/.MainActivity',
     )).toBe(false)
+  })
+})
+
+describe('Morpho startup decision', () => {
+  it('does not turn an incomplete probe into a terminal failure before the startup deadline', async () => {
+    const timer = clock()
+    const onIncompleteObservation = vi.fn()
+    await expect(waitForMorphoStartup({
+      signal: new AbortController().signal,
+      hasBusinessLog: () => false,
+      getLogcatFailure: () => undefined,
+      inspect: async () => ({
+        kind: 'incomplete' as const,
+        reason: 'truncated' as const,
+        missingSections: ['windowPolicy'] as const,
+        summary: 'stdout truncated',
+      }),
+      onIncompleteObservation,
+      now: timer.now,
+      delay: timer.delay,
+    })).rejects.toMatchObject({ code: 'STARTUP_OBSERVATION_INCOMPLETE' })
+    expect(timer.elapsed()).toBe(15_000)
+    expect(onIncompleteObservation).toHaveBeenCalled()
+  })
+
+
+  it('allows later business Logcat evidence to win after an incomplete probe', async () => {
+    const timer = clock()
+    await expect(waitForMorphoStartup({
+      signal: new AbortController().signal,
+      hasBusinessLog: () => timer.elapsed() >= 5_000,
+      getLogcatFailure: () => undefined,
+      inspect: async () => ({
+        kind: 'incomplete' as const,
+        reason: 'truncated' as const,
+        missingSections: ['windowPolicy'] as const,
+        summary: 'window policy truncated',
+      }),
+      now: timer.now,
+      delay: timer.delay,
+    })).resolves.toBe('MORPHO_LOG')
+    expect(timer.elapsed()).toBe(5_000)
+  })
+
+  it('stops immediately when the task is already cancelled', async () => {
+    const controller = new AbortController()
+    controller.abort()
+    await expect(waitForMorphoStartup({
+      signal: controller.signal,
+      hasBusinessLog: () => false,
+      getLogcatFailure: () => undefined,
+      inspect: async () => readyState,
+    })).rejects.toMatchObject({ name: 'AbortError' })
+  })
+
+  it('accepts positive BatchProcessService evidence even when another observation is incomplete', async () => {
+    const timer = clock()
+    await expect(waitForMorphoStartup({
+      signal: new AbortController().signal,
+      hasBusinessLog: () => false,
+      getLogcatFailure: () => undefined,
+      inspect: async () => ({
+        kind: 'incomplete' as const,
+        reason: 'truncated' as const,
+        missingSections: ['power'] as const,
+        serviceRunning: true as const,
+        summary: 'power output truncated',
+      }),
+      now: timer.now,
+      delay: timer.delay,
+    })).resolves.toBe('BATCH_SERVICE')
+    expect(timer.elapsed()).toBe(3_000)
+  })
+
+  it('does not let an old incomplete observation override later complete observations', async () => {
+    const timer = clock()
+    let inspections = 0
+    await expect(waitForMorphoStartup({
+      signal: new AbortController().signal,
+      hasBusinessLog: () => false,
+      getLogcatFailure: () => undefined,
+      inspect: async () => {
+        inspections += 1
+        return inspections === 1
+          ? {
+              kind: 'incomplete' as const,
+              reason: 'empty_output' as const,
+              missingSections: ['power'] as const,
+              summary: 'power output empty',
+            }
+          : { ...readyState, readiness: observation('unknown') }
+      },
+      now: timer.now,
+      delay: timer.delay,
+    })).rejects.toMatchObject({ code: 'SDK_START_FAILED' })
+    expect(timer.elapsed()).toBe(15_000)
   })
 
   it.each([5_000, 12_000])('accepts a business log appearing after %sms', async (appearsAt) => {
@@ -105,6 +324,7 @@ mKeyguardShowing=false
       hasBusinessLog: () => false,
       getLogcatFailure: () => new TaskExecutionError('logcat exited', 'LOGCAT_START_FAILED'),
       inspect: async () => ({
+        kind: 'complete' as const,
         processRunning: false,
         serviceRunning: true,
         readiness: observation('secure_locked'),
