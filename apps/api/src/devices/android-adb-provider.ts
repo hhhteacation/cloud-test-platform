@@ -52,6 +52,23 @@ function first(values: Map<string, string>, ...keys: string[]) {
   return keys.map((key) => values.get(key)?.trim()).find(Boolean)
 }
 
+
+export function parseAdbMdnsServices(output: string): Array<{ host: string; port: number; serial: string }> {
+  return output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).flatMap((line) => {
+    if (/^List of discovered services/i.test(line) || /^adb\s+mdns/i.test(line)) return []
+    if (/_adb-tls-pairing\._tcp/i.test(line)) return []
+    if (line.includes('_adb-') && !/_adb-tls-connect\._tcp/i.test(line)) return []
+    const matches = [...line.matchAll(/(\[[^\]]+\]|(?:[A-Za-z0-9_-]+\.)*[A-Za-z0-9_-]+|\d{1,3}(?:\.\d{1,3}){3}):(\d{1,5})(?=\s|$)/g)]
+    const match = matches.at(-1)
+    if (!match) return []
+    const host = match[1].replace(/^\[|\]$/g, '')
+    const port = Number(match[2])
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return []
+    const serial = host.includes(':') ? `[${host}]:${port}` : `${host}:${port}`
+    return [{ host, port, serial }]
+  })
+}
+
 export class AndroidAdbDeviceProvider implements DeviceDiscoveryProvider {
   readonly platform = 'android' as const
 
@@ -64,6 +81,36 @@ export class AndroidAdbDeviceProvider implements DeviceDiscoveryProvider {
     const listed = await this.execute(this.adbPath, ['devices', '-l'], { timeoutMs: 10_000 })
     const entries = parseAdbDevices(listed.stdout)
     return Promise.all(entries.map((entry) => this.describe(entry)))
+  }
+
+  async discoverNetwork(): Promise<DeviceDiscoveryCandidate[]> {
+    try {
+      const result = await this.execute(this.adbPath, ['mdns', 'services'], { timeoutMs: 10_000 })
+      return parseAdbMdnsServices(result.stdout).map((service) => ({
+        serial: service.serial, platform: 'android' as const, host: service.host, port: service.port,
+        name: `${service.host}:${service.port}`, connectionStatus: 'unknown' as const,
+      }))
+    } catch {
+      return []
+    }
+  }
+
+  async connectNetwork(host: string, port: number): Promise<DeviceDiscoveryCandidate> {
+    const normalizedHost = host.replace(/^\[|\]$/g, '')
+    const serial = normalizedHost.includes(':') ? `[${normalizedHost}]:${port}` : `${normalizedHost}:${port}`
+    try {
+      await this.execute(this.adbPath, ['connect', serial], { timeoutMs: 15_000 })
+      const listed = await this.execute(this.adbPath, ['devices', '-l'], { timeoutMs: 10_000 })
+      const entry = parseAdbDevices(listed.stdout).find((item) => item.serial === serial)
+      if (!entry) return { serial, host, port, platform: 'android', connectionStatus: 'offline' }
+      return { ...(await this.describe(entry)), host, port }
+    } catch {
+      return { serial, host, port, platform: 'android', connectionStatus: 'offline' }
+    }
+  }
+
+  async disconnect(serial: string) {
+    await this.execute(this.adbPath, ['disconnect', serial], { timeoutMs: 10_000 }).catch(() => undefined)
   }
 
   private async describe(entry: AdbListEntry): Promise<DeviceDiscoveryCandidate> {
@@ -86,6 +133,8 @@ export class AndroidAdbDeviceProvider implements DeviceDiscoveryProvider {
         { timeoutMs: 15_000 },
       )
       const props = parseGetProp(result.stdout)
+      const hardwareSerial = first(props, 'ro.serialno', 'ro.boot.serialno', 'ro.vendor.serialno')
+        ?? (/:\d+$/.test(entry.serial) ? undefined : entry.serial)
       const manufacturer = first(props, 'ro.product.manufacturer', 'ro.product.brand')
       const model = first(props, 'ro.product.model', 'ro.product.vendor.model') ?? fallbackModel
       const marketName = first(props, 'ro.config.marketing_name', 'ro.product.marketname')
@@ -93,6 +142,7 @@ export class AndroidAdbDeviceProvider implements DeviceDiscoveryProvider {
       const apiText = first(props, 'ro.build.version.sdk')
       return {
         serial: entry.serial,
+        hardwareSerial,
         platform: 'android',
         manufacturer,
         name: marketName ?? model ?? entry.serial,

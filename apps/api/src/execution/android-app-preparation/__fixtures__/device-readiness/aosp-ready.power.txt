@@ -1,0 +1,4 @@
+POWER MANAGER (dumpsys power)
+  mWakefulness=Awake
+  mInteractive=true
+  Display Power: state=ON

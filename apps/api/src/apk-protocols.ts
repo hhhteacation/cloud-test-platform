@@ -55,6 +55,8 @@ export interface ApkExecutionProtocol {
     mode: ApkProtocolProgressMode
     description: string
     logTag: string
+    /** Tags or tag prefixes that should be retained from the threadtime logcat stream. */
+    logTags?: readonly string[]
   }
   completion: {
     mode: ApkProtocolCompletionMode
@@ -164,12 +166,18 @@ const MORPHO_PROTOCOL: ApkExecutionProtocol = {
       profileIds: [
         'vivo-package-installer-v1',
         'honor-package-installer-v1',
+        'honor-x50-unknown-source-warning-v1',
+        'honor-x50-icp-notice-v1',
+        'honor-safe-mode-install-sheet-v1',
+        'honor-x50-magic-os-unreviewed-app-install-v1',
+        'honor-magic-os-unreviewed-app-block-v1',
+        'xiaomi-hyperos-package-installer-v1',
         'oplus-package-installer-v1',
         'android-runtime-permission-v1',
       ],
       timeoutMs: 120_000,
       pollIntervalMs: 500,
-      maxActions: 4,
+      maxActions: 5,
       unrecognizedGraceMs: 20_000,
     },
   },
@@ -207,6 +215,17 @@ const MORPHO_PROTOCOL: ApkExecutionProtocol = {
     mode: 'logcat_pattern',
     description: '读取 MORPHO 日志中的启动、文件扫描、处理文件、Input、Output 和错误文本来映射平台进度。',
     logTag: 'MORPHO',
+    logTags: [
+      'MORPHO',
+      'MorphoVideoPProc/Controller',
+      'MorphoVideoPProc/Decoder',
+      'MorphoVideoPProc/Encoder',
+      'MorphoVideoPProc/Interface',
+      'MorphoVideoPProc/Parser',
+      'MorphoVideoPProc/Sensor',
+      'MorphoVideoPProc/Stabilizer',
+      'MorphoVideoPProc/WDR',
+    ],
   },
   completion: {
     mode: 'marker_file',
@@ -329,6 +348,7 @@ export function buildLaunchArguments(
 }
 
 export interface MorphoLogSignal {
+  businessStarted?: boolean
   progress?: number
   message?: string
   failureMessage?: string
@@ -336,20 +356,21 @@ export interface MorphoLogSignal {
 }
 
 export function parseMorphoLogLine(line: string): MorphoLogSignal | undefined {
-  if (!line.includes('MORPHO')) return undefined
+  if (!/MORPHO|MorphoVideoPProc\//.test(line)) return undefined
 
   const error = /Error processing file:\s*(.+)$/i.exec(line)
   if (error) return { progress: 65, message: `Morpho 处理失败：${error[1]}`, failureMessage: error[1].trim() }
   if (/no mp4|not found.*mp4|directory.*not exist/i.test(line)) {
     return { progress: 50, message: 'Morpho 未找到可处理的 MP4', failureMessage: 'Morpho 未找到可处理的 MP4' }
   }
-  if (line.includes('Starting batch processing for path:')) return { progress: 48, message: 'Morpho 批处理服务已开始扫描输入目录' }
-  if (/Found\s+\d+\s+mp4/i.test(line) || line.includes('Found mp4 file:')) return { progress: 52, message: 'Morpho 已发现输入 MP4' }
-  if (line.includes('Processing file ')) return { progress: 58, message: 'Morpho 正在处理输入 MP4' }
-  if (line.includes('Input:')) return { progress: 62, message: 'Morpho SDK 已读取输入路径' }
+  if (line.includes('Starting batch processing for path:')) return { businessStarted: true, progress: 48, message: 'Morpho 批处理服务已开始扫描输入目录' }
+  if (/Found\s+\d+\s+mp4/i.test(line) || line.includes('Found mp4 file:')) return { businessStarted: true, progress: 52, message: 'Morpho 已发现输入 MP4' }
+  if (line.includes('Processing file ')) return { businessStarted: true, progress: 58, message: 'Morpho 正在处理输入 MP4' }
+  if (line.includes('Input:')) return { businessStarted: true, progress: 62, message: 'Morpho SDK 已读取输入路径' }
   const output = /Output:\s*(.+\.mp4)\s*$/i.exec(line)
   if (output) {
     return {
+      businessStarted: true,
       progress: 68,
       message: 'Morpho SDK 已确定输出路径',
       outputPath: output[1].trim(),

@@ -1,305 +1,238 @@
-# APK + MP4 单真机兼容性测试平台
+# SDK 视频兼容性测试平台（Phase 0 治理中）
 
-本项目是一个本地运行的 Android SDK 视频处理兼容性测试平台 MVP。
+这是一个**模块化单体**的本地 Android SDK 视频兼容性测试平台。当前阶段的目标不是增加网络 ADB、账号或新平台，而是先把现有 Android USB 真机流程治理稳定，让后续一期可以安全地扩展到 8 台 Android 真机的 USB 与受控网络 ADB 双连接。
+
+## 当前边界
+
+- **Phase 0（当前）：**风险止血、代码模块化、数据/进程可靠性、媒体完整性、中文文档和项目熟悉。
+- **一期：**8 台 Android 真机完成 USB 与网络 ADB 兼容性测试闭环；每台设备继续保留 USB 数据线测试能力。
+- **二期：**4 台 iOS、5 台鸿蒙真机完成有线与受控网络测试闭环，并尝试部署到服务器/公网。
+- **三期：**稳定性、健壮性、SDK 业务场景、CI/CD、企业 SSO 和平台化治理。
+
+Phase 0 明确不实现网络 ADB、远程 Runner、账号/RBAC、iOS、鸿蒙、公网部署、设备池、SDK 稳定性测试或 APK 签名白名单。不要把当前本地服务直接映射到局域网或公网。
+
+> 当前安全模型：本机访问、可信内部人员、专用测试设备。当前服务不适合多人共享或公网使用。
+
+## 一次任务的真实链路
 
 ```text
-浏览器上传 APK + MP4
-→ Fastify 保存文件并写入 SQLite
-→ 每台设备的独立队列调用 ADB
-→ 根据 APK 包名选择执行协议
-→ AndroidAppPreparer 完成设备唤醒、安装、弹窗处理和权限授权
-→ 推送 input.mp4
-→ APK 的 RealSdkAdapter 调用真实 SDK
-→ APK 生成 output.mp4 + result.json
-→ 后端拉取并保存结果
-→ 前端查看进度、播放和下载 output.mp4
+浏览器
+  → Fastify API（127.0.0.1）
+  → TaskService（校验任务、设备和磁盘）
+  → SQLite Store（任务、设备、Artifact、DeviceRun、审计）
+  → DeviceQueueManager（每台设备独立串行队列）
+  → Android AdbWorker
+  → AdbDeviceClient / AndroidAppPreparer / APK 协议适配器
+  → USB ADB 真机
+  → 拉回 output.mp4、日志、截图、UI XML
+  → MediaIntegrityChecker（FFprobe 探测 + FFmpeg 完整解码）
+  → 前端分别展示执行结论和媒体完整性结论
 ```
 
-> 真机通过只代表当前 SDK、当前荣耀设备和当前 MP4 的处理链路通过，不等价于完整 SDK 算法质量验收。
+“执行流程通过”与“输出媒体有效”是两个独立维度。设备操作成功但输出文件损坏时，不能继续显示为完整通过。
 
-## 目录
+## 目录和模块
 
 ```text
 .
 ├── web/                         React + TypeScript + Ant Design 前端
-├── apps/api/                    Fastify + TypeScript + SQLite + ADB Worker
-├── android/                     平台测试 APK（com.sdktest.platform，可选协议载体）
-│   ├── SDK_INTEGRATION.md       真实 SDK Bridge 接入说明
-│   └── sdk-integration-template/
-├── data/                        SQLite 和运行产物（不提交 Git）
-├── package.json                 统一命令
-└── vite.config.ts               Vite 与 /api 代理
+├── apps/api/src/
+│   ├── index.ts                 进程入口
+│   ├── server.ts                Composition Root，只组装模块和生命周期
+│   ├── config.ts                AppConfig 统一配置
+│   ├── routes/                  HTTP 参数解析、校验和响应转换
+│   ├── tasks/task-service.ts    任务用例入口
+│   ├── devices/                 设备登记、发现和状态
+│   ├── execution/               Android 执行深模块及进程/ADB 适配
+│   ├── database/                migration、Store 和数据库契约
+│   ├── artifacts.ts              上传、Artifact 生命周期和孤儿报告
+│   ├── media-integrity.ts        基础媒体完整性
+│   ├── process.ts                受控子进程（超时、取消、输出上限）
+│   └── task-deletion.ts          任务、文件和数据库记录的一致删除
+├── android/                     可选的测试 APK 工程
+├── scripts/                     备份、恢复和孤儿 Artifact 报告
+├── docs/                        中文架构、需求和学习资料
+└── data/                        本地运行数据（已被 Git 忽略）
 ```
 
-## 本地地址
+### 为什么保留模块化单体
 
-```text
-前端：http://localhost:5173
-后端：http://127.0.0.1:3000
-设备：A2AV024719001034
-可识别 APK 包名：
-- com.sdktest.platform
-- com.morphoinc.videopostprocessor
-```
+现在只有一个本机用户和一台/少量专用设备，拆成微服务会增加部署、通信和排障成本。模块之间通过小接口连接：路由不知道 SQL，TaskService 不操作 ADB，Store 不编排任务，Android 执行器不负责 HTTP。未来真的出现第二种设备连接方式时，再在明确的 seam 上增加 Adapter，而不是提前创建空的 iOS/HarmonyOS/远程接口。
 
 ## 环境要求
 
-- Node.js 22.5+（项目使用内置 `node:sqlite`，推荐 Node 24）
+- Node.js 22.5+（使用内置 `node:sqlite`，推荐 Node.js 24）
 - pnpm 11
-- Java 17
-- Android SDK 36 / Build Tools 36
-- ADB：`$ANDROID_SDK_ROOT/platform-tools/adb`
-- AAPT：`$ANDROID_SDK_ROOT/build-tools/36.0.0/aapt`
+- Android SDK Platform Tools（ADB）
+- Android Build Tools（AAPT）
+- FFmpeg 和 FFprobe（由项目依赖提供，通常不需要全局安装）
+- Android 构建需要 JDK 17
 
-## 启动完整平台（真实模式）
+首次安装依赖：
 
 ```bash
-pnpm install
+corepack enable
+pnpm install --frozen-lockfile
+```
+
+项目默认使用依赖中携带的 FFmpeg/FFprobe，不要求通过 Homebrew 等方式全局安装。只有需要切换自定义版本时，才配置 `FFMPEG_PATH` 和 `FFPROBE_PATH`；路径不可执行时，正式 API 会在启动检查阶段停止，避免服务带病运行。
+
+## 配置和启动
+
+复制 `.env.example` 为 `.env.local`，仅填写本机实际路径。最重要的原则是：**不配置 `ADB_SERIAL` 就不登记、不自动连接、不操作任何真机。**
+
+```dotenv
+API_HOST=127.0.0.1
+API_PORT=3000
+CLOUD_TEST_DATA_DIR=/absolute/path/to/cloud-test-data
+ADB_SERIAL=仅在明确选择一台 USB 真机时填写
+ADB_PATH=/absolute/path/to/android-sdk/platform-tools/adb
+AAPT_PATH=/absolute/path/to/android-sdk/build-tools/36.0.0/aapt
+# 通常不用填写；只有覆盖项目内置媒体工具时才设置
+# FFMPEG_PATH=/absolute/path/to/ffmpeg
+# FFPROBE_PATH=/absolute/path/to/ffprobe
+```
+
+开发启动：
+
+```bash
 pnpm dev
 ```
 
-根命令会同时执行：
+- Web：<http://127.0.0.1:5173>
+- API：<http://127.0.0.1:3000>
+- 前端默认连接真实 `/api`，不会因为遗漏环境变量而静默进入 Mock。
+- 只有执行 `pnpm dev:web:mock` 或显式设置 `VITE_PLATFORM_MODE=mock` 才会进入纯前端演示模式；Mock 不能用于真机测试。
 
-```text
-VITE_API_BASE_URL=/api vite --host 0.0.0.0
-pnpm dev:api
-```
+`pnpm dev:api` 和 `pnpm start:api` 会读取项目根目录中存在的 `.env.local`。开发页面会显示“Phase 0 · 本机单用户”。不要使用 `--host 0.0.0.0`，不要设置非 loopback 的 `API_HOST`，不要通过反向代理把 API 暴露到其他设备。
 
-浏览器访问 `http://localhost:5173`。Vite 把 `/api` 请求代理到 `127.0.0.1:3000`，因此前端不会直接跨域访问后端。
+### 启动前检查
 
-单独启动：
+服务启动前会检查数据目录、子目录、磁盘最低剩余空间、ADB/AAPT/FFmpeg/FFprobe。任一项失败都会用清晰错误停止启动。这样可以在任务开始前发现环境问题，而不是测试中途产生难以解释的失败。
 
-```bash
-pnpm dev:web          # 未配置 API，使用 localStorage Mock 模式
-pnpm dev:web:real     # 使用 /api 访问真实后端
-pnpm dev:api          # 只启动 Fastify API
-```
-
-## 构建
+## 验证命令
 
 ```bash
+pnpm test
 pnpm build
 ./android/gradlew -p android assembleDebug
 ```
 
-APK 输出：
+也可以分别检查：
 
-```text
-android/app/build/outputs/apk/debug/app-debug.apk
+```bash
+./node_modules/.bin/tsc -p apps/api/tsconfig.json
+./node_modules/.bin/tsc -p tsconfig.app.json
+./node_modules/.bin/vitest run
 ```
 
-Gradle 第一次执行需要下载 Gradle 8.11.1 和 Android Gradle Plugin 8.10.1。网络中断会产生不完整 zip；删除对应的 `~/.gradle/wrapper/dists/gradle-8.11.1-bin/...` 临时目录后重试即可。
+CI 文件为 `.github/workflows/phase0-ci.yml`，包含 Web/API 测试构建和 Android `assembleDebug`。
 
-## 真实 SDK 前置条件
+## USB Android 真机使用原则
 
-当前仓库没有厂商 SDK AAR/JAR/SO 和调用文档。`RealSdkAdapter` 会加载：
+Phase 0 只治理现有 USB ADB 流程，不实现网络 ADB。连接真机前：
 
-```text
-com.sdktest.integration.VendorSdkBridgeImpl
+1. 只连接专用测试设备，不连接个人手机。
+2. 通过数据线连接并在手机上确认 USB 调试授权。
+3. 执行 `adb devices -l`，确认 Serial 与目标手机一致。
+4. 只把该 Serial 写入 `ADB_SERIAL`。
+5. 提交一条小任务，先观察日志、截图和 output.mp4，再进行正式验证。
+
+测试 APK 当前不做签名证书白名单校验。签名证书指纹可以确认 APK 确实由可信开发者签名，防止同包名伪装；在白名单完成前，只能用“本机、可信人员、专用设备”作为补偿性边界。正式扩大使用范围前必须重新评估这个残余风险。
+
+## 结果可信度规则
+
+Phase 0 的媒体 Gate 只有：
+
+- 文件存在且非空；
+- FFprobe 能识别容器和视频流；
+- FFmpeg 能从头到尾完整解码。
+
+系统会记录容器、编码、分辨率、帧率、实际帧数、时长、音频流和编码等元数据，但以下指标**暂不影响通过/失败**：
+
+- 总帧数是否为 808 或 808±5；
+- 输入/输出分辨率是否一致；
+- 输入有音频时输出是否必须有音频；
+- 输入/输出帧率是否一致；
+- 输入/输出时长偏差。
+
+“自动回退执行结果”是指真实 UI/设备流程失败后，改用预设结果、模拟结果或旧文件继续判定成功。Phase 0 禁止这样做；任何真实失败都必须保留失败代码和原因。
+
+## 数据目录、保留和清理
+
+默认数据目录由代码位置推导，不依赖启动时 `process.cwd()`；也可以通过绝对路径 `CLOUD_TEST_DATA_DIR` 固定到指定磁盘。
+
+建议保留策略：
+
+| 数据 | 建议保留 |
+|---|---:|
+| 输入 APK、输入视频、输出视频、日志、截图、UI XML | 7 天 |
+| Task/兼容性报告元数据 | 30 天 |
+| 审计记录 | 180 天 |
+| 金样本/问题复现样本 | 在引用期间保留 |
+
+当前 Phase 0 不自动删除孤儿目录，只启动报告，避免误删证据。手动报告：
+
+```bash
+pnpm report:orphans
 ```
 
-没有这个实现时，APK 会如实返回：
+## 备份和恢复
 
-```text
-SDK_INITIALIZE_FAILED
-```
-
-不会复制输入文件伪造成功。接入方式见：
-
-```text
-android/SDK_INTEGRATION.md
-```
-
-## 数据和输出位置
-
-电脑：
-
-```text
-data/cloud-test.sqlite
-data/artifacts/{storageKey}/test.apk
-data/artifacts/{storageKey}/input.mp4
-data/tasks/{taskId}/device-runs/{runId}/
-├── result.json
-├── output.mp4
-├── logcat.txt
-├── screenshots/final.png
-└── diagnostics/                 # 未识别/超时安装弹窗的 XML、截图和窗口信息
-```
-
-手机：
-
-```text
-/sdcard/Android/data/{APK_PACKAGE_NAME}/files/tasks/{taskId}/
-├── input/input.mp4
-├── output/output.mp4
-└── result/result.json
-```
-
-报告视频通过以下接口提供：
-
-```text
-GET /api/outputs/:id/content    支持 HTTP Range / 206，用于在线播放和拖动
-GET /api/outputs/:id/download   附件下载
-```
-
-## API
-
-```text
-GET  /api/health
-GET  /api/devices
-POST /api/artifacts?kind=apk|video
-GET  /api/artifacts/:id
-GET  /api/artifacts/:id/content
-POST /api/tasks
-GET  /api/tasks
-GET    /api/tasks/:id
-POST   /api/tasks/:id/cancel
-DELETE /api/tasks/:id
-GET    /api/tasks/:id/report
-GET  /api/tasks/:taskId/device-runs/:runId/logcat
-GET  /api/tasks/:taskId/device-runs/:runId/screenshots/final
-GET  /api/outputs/:id/content
-GET  /api/outputs/:id/download
-```
-
-## Android 无人值守应用准备
-
-Android 安装前置逻辑集中在深模块：
-
-```text
-apps/api/src/execution/android-app-preparation/
-├── android-app-preparer.ts      对 Worker 暴露的统一入口
-├── device-readiness.ts          点亮屏幕、解除无密码锁屏、检测安全锁
-├── apk-install-coordinator.ts   干净安装与弹窗监控并行协调
-├── runtime-permissions.ts       pm grant、dumpsys 跨厂商验证、AppOps 诊断
-├── system-dialog-controller.ts  UI XML 读取、系统包校验、诊断保存
-├── dialog-profiles.ts           vivo/荣耀/Android 权限白名单 Profile
-└── ui-xml.ts                    UI Automator XML 和 bounds 解析
-```
-
-Morpho 协议声明：
-
-```text
-安装方式：clean（先卸载后安装）
-运行时权限：CAMERA、RECORD_AUDIO
-弹窗策略：strict-whitelist
-最大自动操作：4 次
-```
-
-系统弹窗点击坐标只从当前 UI XML 节点的 `bounds` 计算，不使用固定坐标。只有窗口属于可信系统安装器/权限控制器、设备厂商匹配、界面包含 Morpho 应用身份且至少两个 Profile 特征时才会点击。未知弹窗会保存到当前 `deviceRun/diagnostics` 并让该设备运行失败，不影响其他设备队列。
-
-新增 Android 厂商支持时只添加新的 Dialog Profile 和去除个人信息后的 XML fixture；不要把厂商文案判断写回 `adb.ts`。未来 iOS 与 HarmonyOS 应实现各自的应用准备模块，不复用 ADB、UI Automator 或 Android 权限语义。
-
-
-## 安全删除测试任务
-
-任务列表的“删除”操作只对以下终态开放：
-
-```text
-passed
-failed
-cancelled
-```
-
-排队中或执行中的任务必须先取消，前端按钮会禁用，后端也会再次校验。删除由
-`apps/api/src/task-deletion.ts` 中的 `TaskDeletionService` 统一完成，HTTP 路由不会自行执行 SQL 或删除文件。
-
-删除范围仅限指定任务：
-
-```text
-目标 tasks 记录
-├── device_runs / check_results
-├── task_logs
-├── task_outputs
-└── data/tasks/{taskId}
-```
-
-APK 和 MP4 只有在数据库确认没有其他任务引用、且磁盘路径通过白名单校验时才会清理。共享素材、设备数据、其他任务和 SQLite 文件不会被删除。文件会先移动到 `data/.trash/delete-{uuid}`，数据库事务成功后才永久清理；事务失败会回滚数据库并恢复文件。
-
-成功响应示例：
-
-```json
-{
-  "taskId": "task-xxx",
-  "deletedAt": "2026-07-30T12:00:00.000Z",
-  "deletedRecordCounts": {
-    "tasks": 1,
-    "deviceRuns": 1,
-    "checkResults": 12,
-    "logs": 35,
-    "outputs": 1
-  },
-  "deletedArtifactIds": [],
-  "retainedArtifactIds": ["artifact-shared-apk"],
-  "fileCleanupWarnings": []
-}
-```
-
-错误约定：
-
-```text
-400 INVALID_TASK_ID
-404 TASK_NOT_FOUND
-409 TASK_NOT_DELETABLE
-409 TASK_STATE_CHANGED
-500 TASK_DELETE_FAILED
-```
-
-删除摘要写入 `task_deletion_audits`，审计记录不关联 `tasks` 外键，因此目标任务删除后仍可追踪。目前执行人记录为 `local-user`。
-
-## 真实数据删除前备份
-
-第一次对真实任务使用删除按钮前，执行：
+备份脚本使用脚本自身位置定位项目根目录，因此从任何工作目录执行都指向同一数据目录：
 
 ```bash
 pnpm backup:data
+# 或 CLOUD_TEST_DATA_DIR=/absolute/path/to/data pnpm backup:data
 ```
 
-如果当前环境只通过 Corepack 提供 pnpm：
+备份目录包含 SQLite 在线备份、`manifest.json`、Artifact 和任务文件。恢复必须恢复到新的绝对路径，脚本拒绝覆盖非空目录：
 
 ```bash
-corepack pnpm backup:data
+pnpm restore:data /absolute/path/to/data/backups/cloud-test-... /tmp/cloud-test-restored
 ```
 
-备份输出到：
+恢复后先用恢复目录启动一次并执行验证，不要直接替换正在运行的正式数据目录。数据库 migration 在有待迁移时会先生成 `data/backups/schema/before-migration-*.sqlite`，checksum 变化或迁移失败会阻止启动。
 
-```text
-data/backups/cloud-test-{时间}/
-├── cloud-test.sqlite
-├── artifacts/
-├── tasks/
-└── manifest.json
-```
+## 常见排障路径
 
-脚本使用 Node SQLite 在线 backup 接口生成一致的数据库备份，不是只复制可能仍依赖 WAL 的主数据库文件。备份先写入 `.incomplete-*` 临时目录，全部完成后再原子改名。`manifest.json` 会记录备份时间和各表行数。
-
-恢复前应停止 API 服务，再将备份数据库、`artifacts` 和 `tasks` 恢复到单独的 `CLOUD_TEST_DATA_DIR` 进行验证；不要直接覆盖仍在运行的真实服务目录。
-
-## 关键前端文件
-
-| 层级 | 文件 | 作用 |
+| 现象 | 先看哪里 | 常见原因 |
 |---|---|---|
-| 入口 | `index.html`、`web/src/main.tsx` | 浏览器页面和 React 挂载点 |
-| 路由 | `web/src/App.tsx` | 地址与页面组件映射 |
-| 数据类型 | `web/src/types/index.ts` | Task、Run、Artifact、Output 等类型 |
-| 数据访问 | `web/src/platform/client.ts` | 决定使用真实 API 或 Mock |
-| 数据访问 | `web/src/platform/httpClient.ts` | 上传、创建任务、轮询和报告 API |
-| 数据访问 | `web/src/platform/mockClient.ts` | 无后端时的浏览器演示 |
-| 删除深模块 | `apps/api/src/task-deletion.ts` | 删除计划、事务、隔离区、素材引用检查和审计 |
-| 删除路由 | `apps/api/src/routes/task-deletion-route.ts` | 将删除结果和领域错误转换成 HTTP 响应 |
-| 任务操作 | `web/src/features/tasks/TaskActions.tsx` | 查看、删除、禁用原因和二次确认 |
-| 数据备份 | `scripts/backup-cloud-test-data.mjs` | SQLite 在线备份及 tasks/artifacts 文件备份 |
-| 创建任务 | `web/src/pages/CreateTaskPage.tsx` | 保留真实 File、上传 APK/MP4、创建任务 |
-| 执行详情 | `web/src/pages/ExecutionPage.tsx` | 阶段、进度、检查项和日志 |
-| 测试报告 | `web/src/pages/ReportPage.tsx` | 输入/输出信息、在线播放和下载 |
-| 样式布局 | `web/src/styles.css` | Flex、Grid、间距、颜色和视频区域 |
+| 页面打不开 | Web 终端、`/api/health` | Vite/API 未启动或端口占用 |
+| API 返回 403 | API 日志、Host/Origin | 当前只允许 loopback |
+| API 启动失败 | 启动终端 | 工具路径、磁盘、数据目录或 migration 检查失败 |
+| 设备未上线 | 设备页、ADB 输出 | Serial 错误、USB 未授权、设备离线 |
+| APK 上传失败 | API 日志、Artifact 目录 | 类型/大小/磁盘限制，临时文件会清理 |
+| 任务停在执行中 | Task、DeviceRun、logcat | ADB、弹窗、APK 协议或设备状态 |
+| 执行通过但报告失败 | DeviceRun 两个结果区 | 输出 MP4 不存在、不可探测或无法完整解码 |
+| 找不到输出文件 | Artifact/Task 输出记录 | 执行失败或文件补偿清理 |
 
-## 当前限制
+建议排障顺序：前端 → HTTP/API → TaskService → DeviceRun/队列 → ADB → 设备 → APK/SDK → FFprobe/FFmpeg → 文件和数据库。
 
-1. 第一版真实调度只允许 `honor-magic-v3`；
-2. 一台设备同一时间只运行一个任务；
-3. 服务重启后，遗留 running 任务标记为 `SERVICE_RESTARTED`；
-4. SQLite 使用 Node 内置 `node:sqlite`，启动时可能显示 ExperimentalWarning；
-5. 第一版使用 Android 播放器验证输出可播放，尚未接 ffprobe、黑帧或绿帧分析；
-6. 截图和完整 logcat 会落盘，报告页提供下载/查看入口；文件尚未生成时接口返回明确的 404；
-7. 真实 SDK 未提供前，平台链路可以运行到 APK，但任务不能通过。
+## 修改需求应该从哪里开始
+
+1. 先在 `docs/Phase0基础治理与项目熟悉手册.md` 和现有需求报告中确认范围，避免把一期/二期功能提前混入 Phase 0。
+2. 如果是请求参数或响应展示：先看对应 `routes/` 和 `web/src/types/`。
+3. 如果是任务规则：从 `TaskService` 开始，不在路由里写 SQL 或 ADB。
+4. 如果是设备操作：从 Android 执行模块/Adapter 开始，不在 UI 里拼 ADB 命令。
+5. 如果是文件生命周期：从 `ArtifactService` 或 `TaskDeletionService` 开始。
+6. 如果是数据库字段：新增 migration、Store 测试和兼容字段，不直接改旧数据库。
+7. 每批只解决一个风险或一个结构问题：先写测试，再小提交，最后记录回滚方式。
+
+## Phase 0 交接练习
+
+项目负责人完成以下练习即表示熟悉度达到进入一期前的最低要求：
+
+- 启动/停止服务，运行 `pnpm test`、`pnpm build`。
+- 连接一台已登记的 USB Android 设备并提交一条兼容性测试。
+- 从页面和数据库中找到一个 Task、DeviceRun、logcat、截图和输出 Artifact。
+- 判断一次失败属于前端、API、ADB、设备还是媒体文件。
+- 修改一个小型校验规则并补一条测试。
+- 用 Git 查看差异、提交，并在本地回滚自己的提交。
+- 用 `pnpm backup:data` 备份，并恢复到一个新的绝对目录。
+
+## 后续三期准入
+
+只有 Phase 0 的 Git 基线、恢复方案、持续测试构建、loopback 访问、显式设备配置、上传/磁盘/进程/migration/孤儿治理、媒体完整性结论和中文交接资料全部通过，才开始一期的网络 ADB、PhysicalDevice、USB/网络双 Endpoint、设备租约和 16 条 Android 强制基线开发。
+
+一期和二期仍必须给每台真机保留数据线连接测试能力。三期再评估稳定性、健壮性和 SDK 场景的长期运行模型；不能因为 Phase 0 已经有媒体完整性检查，就宣称已经完成稳定性或 SDK 业务测试平台。

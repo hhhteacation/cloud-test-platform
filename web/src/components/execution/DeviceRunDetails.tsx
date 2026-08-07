@@ -39,6 +39,25 @@ export function DeviceRunDetails({
         </Space>
       )}
 
+      {run && (
+        <>
+          <Alert
+            className="failure-alert"
+            type="info"
+            showIcon
+            message={`本次连接：${run.connectionKind === 'network' ? '联网 ADB' : run.connectionKind === 'usb' ? 'USB ADB' : '等待解析'}`}
+            description={run.adbSerial ? `ADB Serial：${run.adbSerial}${run.endpointId ? `；Endpoint：${run.endpointId}` : ''}` : '任务进入该物理设备队列后，会在执行前固化实际连接。'}
+          />
+          <Alert
+            className="failure-alert"
+            type={run.mediaIntegrityStatus === 'failed' ? 'error' : 'info'}
+            showIcon
+            message={`执行流程：${run.executionStatus ?? 'pending'}；媒体完整性：${run.mediaIntegrityStatus ?? 'not_checked'}`}
+            description="Phase 0 仅校验文件可探测且可完整解码；808 帧、分辨率、音频、帧率和时长暂不作为通过条件。"
+          />
+        </>
+      )}
+
       {run?.failureCode && (
         <Alert
           className="failure-alert"

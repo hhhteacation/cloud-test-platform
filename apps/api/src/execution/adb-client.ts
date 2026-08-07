@@ -1,5 +1,4 @@
-import { ProcessError, runProcess, type ProcessResult } from '../process.js'
-import { config } from '../config.js'
+import { BoundedProcessRunner, ProcessError, type ProcessResult, type ProcessRunner } from '../process.js'
 import { TaskExecutionError } from './execution-errors.js'
 
 export type AdbConnectionStatus = 'online' | 'offline' | 'unauthorized'
@@ -20,13 +19,14 @@ function describeOperation(args: readonly string[]) {
  */
 export class AdbDeviceClient {
   constructor(
-    private readonly adbPath = config.adbPath,
-    private readonly deviceSerial = config.deviceSerial,
+    private readonly adbPath: string,
+    private readonly deviceSerial: string,
+    private readonly runner: ProcessRunner = new BoundedProcessRunner(),
   ) {}
 
   async connectionStatus(): Promise<AdbConnectionStatus> {
     try {
-      const result = await runProcess(this.adbPath, ['devices'], { timeoutMs: 10_000 })
+      const result = await this.runner.run(this.adbPath, ['devices'], { timeoutMs: 10_000 })
       const line = result.stdout
         .split(/\r?\n/)
         .find((item) => item.startsWith(this.deviceSerial))
@@ -47,7 +47,7 @@ export class AdbDeviceClient {
     code = 'SDK_PROCESSING_FAILED',
   ): Promise<ProcessResult> {
     try {
-      return await runProcess(
+      return await this.runner.run(
         this.adbPath,
         ['-s', this.deviceSerial, ...args],
         { signal, timeoutMs },
@@ -67,6 +67,10 @@ export class AdbDeviceClient {
         code,
       )
     }
+  }
+
+  async clearLogcat(signal: AbortSignal) {
+    return this.run(['logcat', '-b', 'all', '-c'], signal, 30_000, 'LOGCAT_CLEAR_FAILED')
   }
 
   async stat(remotePath: string, signal: AbortSignal) {

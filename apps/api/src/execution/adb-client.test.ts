@@ -4,6 +4,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { AdbDeviceClient } from './adb-client.js'
+import { ProcessError, type ProcessRunner } from '../process.js'
 
 const temporaryDirectories: string[] = []
 
@@ -37,5 +38,37 @@ describe('AdbDeviceClient package detection', () => {
       'com.morphoinc.videopostprocessor',
       new AbortController().signal,
     )).resolves.toBe(false)
+  })
+})
+
+
+describe('AdbDeviceClient logcat clearing', () => {
+  it('clears all buffers on the explicitly selected device', async () => {
+    const calls: Array<{ command: string; args: string[] }> = []
+    const runner: ProcessRunner = {
+      async run(command, args) {
+        calls.push({ command, args })
+        return { code: 0, stdout: '', stderr: '' }
+      },
+    }
+    const device = new AdbDeviceClient('/adb', 'serial-1', runner)
+
+    await device.clearLogcat(new AbortController().signal)
+
+    expect(calls).toEqual([{ command: '/adb', args: ['-s', 'serial-1', 'logcat', '-b', 'all', '-c'] }])
+  })
+
+  it('maps a clear failure to LOGCAT_CLEAR_FAILED', async () => {
+    const runner: ProcessRunner = {
+      async run(command, args) {
+        throw new ProcessError('adb failed', command, args, { code: 1, stdout: '', stderr: 'permission denied' })
+      },
+    }
+    const device = new AdbDeviceClient('/adb', 'serial-1', runner)
+
+    await expect(device.clearLogcat(new AbortController().signal)).rejects.toMatchObject({
+      code: 'LOGCAT_CLEAR_FAILED',
+      message: expect.stringContaining('permission denied'),
+    })
   })
 })

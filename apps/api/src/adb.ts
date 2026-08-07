@@ -1,4 +1,4 @@
-import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, stat, statfs, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 
 import {
@@ -10,19 +10,26 @@ import {
   type ApkExecutionPaths,
   type ApkExecutionProtocol,
 } from './apk-protocols.js'
-import { config, tasksDir } from './config.js'
+import { config as defaultConfig, type AppConfig } from './config.js'
 import { PlatformDatabase, type DeviceRunExecution, type DeviceRunJob } from './database.js'
-import { runProcess } from './process.js'
+import { MediaIntegrityChecker } from './media-integrity.js'
+import { BoundedProcessRunner, type ProcessRunner } from './process.js'
 import { TaskExecutionError } from './execution/execution-errors.js'
 import { getCheckName } from './execution/check-names.js'
 import { delay, sha256File } from './execution/file-utils.js'
 import { AdbDeviceClient } from './execution/adb-client.js'
-import { AdbStreams } from './execution/adb-streams.js'
+import { AdbStreams, type LogcatStreamEvent } from './execution/adb-streams.js'
 import { TaskProcessRegistry } from './execution/process-registry.js'
+import {
+  buildMorphoStartupProbeArguments,
+  parseMorphoStartupProbe,
+  waitForMorphoStartup,
+} from './execution/morpho-startup.js'
 import {
   DefaultAndroidAppPreparer,
   type AndroidAppPreparer,
 } from './execution/android-app-preparation/index.js'
+import { AndroidDeviceReadiness } from './execution/android-app-preparation/device-readiness.js'
 import type { AndroidCheckEvent, AndroidResult, DeviceRunPhase } from './types.js'
 
 function isDirectRemoteChild(directory: string, candidate: string) {
@@ -35,14 +42,27 @@ function isDirectRemoteChild(directory: string, candidate: string) {
 export class AdbWorker {
   private readonly active = new Map<string, AdbRunExecutor>()
 
-  constructor(private readonly database: PlatformDatabase) {}
+  constructor(
+    private readonly database: PlatformDatabase,
+    private readonly mediaIntegrityChecker = new MediaIntegrityChecker(),
+    private readonly appConfig: AppConfig = defaultConfig,
+    private readonly processRunner: ProcessRunner = new BoundedProcessRunner({
+      maxOutputBytes: appConfig.maxProcessOutputBytes,
+      killGraceMs: appConfig.processKillGraceMs,
+    }),
+  ) {}
 
   async execute(job: DeviceRunJob) {
     const execution = this.database.getDeviceRunExecution(job.taskId, job.runId)
     if (!execution) throw new Error(`设备执行不存在：${job.runId}`)
     if (execution.taskStatus === 'cancelled' || execution.runStatus !== 'queued') return
+    if (!execution.endpointId || !execution.connectionKind || !execution.deviceSerial) {
+      throw new Error(`设备执行尚未解析 ADB Endpoint：${job.runId}`)
+    }
 
-    const runner = new AdbRunExecutor(this.database, execution)
+    const runner = new AdbRunExecutor(
+      this.database, execution, this.mediaIntegrityChecker, this.appConfig, this.processRunner,
+    )
     this.active.set(job.runId, runner)
     try {
       await runner.execute()
@@ -61,7 +81,7 @@ export class AdbWorker {
 class AdbRunExecutor {
   readonly taskId: string
   private readonly runId: string
-  private readonly processes = new TaskProcessRegistry()
+  private readonly processes: TaskProcessRegistry
   private readonly device: AdbDeviceClient
   private readonly streams: AdbStreams
   private readonly appPreparer: AndroidAppPreparer
@@ -69,11 +89,18 @@ class AdbRunExecutor {
   constructor(
     private readonly database: PlatformDatabase,
     private readonly execution: DeviceRunExecution,
+    private readonly mediaIntegrityChecker: MediaIntegrityChecker,
+    private readonly appConfig: AppConfig,
+    private readonly processRunner: ProcessRunner,
   ) {
     this.taskId = execution.taskId
     this.runId = execution.runId
-    this.device = new AdbDeviceClient(config.adbPath, execution.deviceSerial)
-    this.streams = new AdbStreams(config.adbPath, execution.deviceSerial, this.processes)
+    this.processes = new TaskProcessRegistry(appConfig.processKillGraceMs)
+    this.device = new AdbDeviceClient(appConfig.adbPath, execution.deviceSerial, processRunner)
+    this.streams = new AdbStreams(appConfig.adbPath, execution.deviceSerial, this.processes, {
+      maxLogBytes: appConfig.maxLogcatBytes,
+      killGraceMs: appConfig.processKillGraceMs,
+    })
     this.appPreparer = new DefaultAndroidAppPreparer({
       createDevice: () => this.device,
       captureScreenshot: (targetPath, signal) => this.streams.captureScreenshot(
@@ -89,7 +116,7 @@ class AdbRunExecutor {
     this.processes.killChildren(this.runId)
     const packageName = this.processes.packageName(this.runId) || this.execution.apkPackageName
     if (packageName) {
-      void runProcess(config.adbPath, [
+      void this.processRunner.run(this.appConfig.adbPath, [
         '-s', this.execution.deviceSerial, 'shell', 'am', 'force-stop', packageName,
       ]).catch(() => undefined)
     }
@@ -108,6 +135,7 @@ class AdbRunExecutor {
         runStatus: 'failed',
         progress: 100,
         finished: true,
+        executionStatus: 'failed', executionFailureCode: 'UNSUPPORTED_APK_PROTOCOL',
         failureCode: 'UNSUPPORTED_APK_PROTOCOL',
         failureMessage: `APK 包名 ${execution.apkPackageName || '未知'} 没有执行协议`,
       })
@@ -118,7 +146,7 @@ class AdbRunExecutor {
     const signal = controller.signal
     this.processes.begin(runId, controller, protocol.packageName)
 
-    const localRunDir = path.join(tasksDir, taskId, 'device-runs', runId)
+    const localRunDir = path.join(this.appConfig.tasksDir, taskId, 'device-runs', runId)
     const localResult = path.join(localRunDir, 'result.json')
     const localOutput = path.join(localRunDir, 'output.mp4')
     const localLogcat = path.join(localRunDir, 'logcat.txt')
@@ -126,9 +154,13 @@ class AdbRunExecutor {
     const diagnosticsDirectory = path.join(localRunDir, 'diagnostics')
     let paths: ApkExecutionPaths | undefined
     let detectedRemoteOutputFile: string | undefined
-    let logcatText = ''
     let protocolFailure: string | undefined
     let stopLogcat: (() => Promise<void>) | undefined
+    let logcatWarning: string | undefined
+    let businessStarted = false
+    let acceptMorphoStartupEvidence = false
+    let morphoBusinessLogStarted = false
+    let logcatFatal: TaskExecutionError | undefined
 
     const update = (phase: DeviceRunPhase, progress: number, message: string) => {
       this.database.setExecutionState({
@@ -142,6 +174,7 @@ class AdbRunExecutor {
       this.database.setExecutionState({
         taskId, runId, taskStatus: 'running', runStatus: 'running',
         phase: 'validating_device', progress: 2, started: true,
+        executionStatus: 'running', executionFailureCode: null,
         failureCode: null, failureMessage: null,
       })
       this.database.addLog(taskId, runId, `开始检查 ADB 真机连接；执行协议：${protocol.name}`)
@@ -165,6 +198,7 @@ class AdbRunExecutor {
       })
       detectedRemoteOutputFile = paths.remoteOutputFile
 
+      const preparationStartedAt = Date.now()
       const preparation = await this.appPreparer.prepareApplication({
         deviceSerial: execution.deviceSerial,
         deviceManufacturer: manufacturer,
@@ -175,15 +209,20 @@ class AdbRunExecutor {
         signal,
         onEvent: (event) => update(event.phase, event.progress ?? 15, event.message),
       })
+      if (logcatFatal) throw logcatFatal
       this.database.addLog(
         taskId,
         runId,
         `应用准备完成：${preparation.cleanInstalled ? '干净安装' : '覆盖安装'}；`
           + `已授权 ${preparation.grantedPermissions.length} 项权限；`
-          + `自动处理 ${preparation.handledDialogs.length} 个系统弹窗`,
+          + `自动处理 ${preparation.handledDialogs.length} 个系统弹窗；`
+          + `APK 安装耗时=${preparation.timings.installMs}ms；`
+          + `权限与启动前兼容处理耗时=${preparation.timings.permissionMs}ms；`
+          + `应用准备总耗时=${Date.now() - preparationStartedAt}ms`,
       )
 
       update('transferring_input', 25, '正在准备 APK 输入目录并清理本次旧结果')
+      const transferStartedAt = Date.now()
       await this.prepareRemotePaths(protocol, paths, signal)
       await this.adb(['push', execution.videoPath, paths.remoteInputFile], signal, 180_000, 'INPUT_PUSH_FAILED')
       const remoteSize = await this.remoteStat(paths.remoteInputFile, signal)
@@ -194,39 +233,111 @@ class AdbRunExecutor {
       this.database.upsertCheck(runId, {
         key: 'input', name: '输入 MP4 校验', status: 'passed', message: `${localSize} bytes`,
       })
+      this.database.addLog(taskId, runId, `视频上传与远端校验耗时=${Date.now() - transferStartedAt}ms`)
 
-      await this.adb(['logcat', '-c'], signal)
-      stopLogcat = this.startLogcat(runId, protocol.progress.logTag, signal, (line) => {
-        logcatText += `${line}\n`
-        if (protocol.progress.mode === 'structured_log') {
-          this.consumeStructuredEvent(taskId, runId, line)
-          return
-        }
 
-        const event = parseMorphoLogLine(line)
-        if (!event) return
-        if (event.message) this.database.addLog(taskId, runId, event.message, event.failureMessage ? 'error' : 'info')
-        if (event.failureMessage) protocolFailure = event.failureMessage
-        if (event.outputPath && paths && isDirectRemoteChild(paths.remoteOutputDirectory, event.outputPath)) {
-          detectedRemoteOutputFile = event.outputPath
-          this.database.addLog(taskId, runId, `Morpho 实际输出路径：${event.outputPath}`)
-        }
-        if (typeof event.progress === 'number') {
-          this.database.setExecutionState({
-            taskId, runId, taskStatus: 'running', runStatus: 'running',
-            phase: 'processing', progress: event.progress,
-          })
-        }
-      })
+      const launchReadiness = new AndroidDeviceReadiness(this.device)
+      const launchObservation = await launchReadiness.prepare(signal)
+      if (launchObservation.condition !== 'ready') {
+        this.database.addLog(
+          taskId,
+          runId,
+          `DEVICE_READINESS condition=${launchObservation.condition} evidence=${launchObservation.summary} phase=before_final_launch`,
+          'warning',
+        )
+      }
 
+      await this.assertLogcatDiskSpace(localRunDir)
+      const logTags = protocol.progress.logTags ?? [protocol.progress.logTag]
+      try {
+        stopLogcat = await this.startLogcat(
+          runId,
+          localLogcat,
+          signal,
+          logTags,
+          (line) => {
+            if (protocol.progress.mode === 'structured_log') {
+              this.consumeStructuredEvent(taskId, runId, line)
+              return
+            }
+
+            const event = parseMorphoLogLine(line)
+            if (!event || !acceptMorphoStartupEvidence) return
+            if (event.businessStarted) morphoBusinessLogStarted = true
+            if (event.message) this.database.addLog(taskId, runId, event.message, event.failureMessage ? 'error' : 'info')
+            if (event.failureMessage) protocolFailure = event.failureMessage
+            if (event.outputPath && paths && isDirectRemoteChild(paths.remoteOutputDirectory, event.outputPath)) {
+              detectedRemoteOutputFile = event.outputPath
+              this.database.addLog(taskId, runId, `Morpho 实际输出路径：${event.outputPath}`)
+            }
+            if (typeof event.progress === 'number') {
+              this.database.setExecutionState({
+                taskId, runId, taskStatus: 'running', runStatus: 'running',
+                phase: 'processing', progress: event.progress,
+              })
+            }
+          },
+          (event) => {
+            logcatWarning = this.describeLogcatEvent(event)
+            this.database.addLog(taskId, runId, logcatWarning, 'warning')
+            if (!businessStarted && (event.type === 'process_exited' || event.type === 'write_failed')) {
+              logcatFatal = new TaskExecutionError(logcatWarning, 'LOGCAT_START_FAILED')
+            }
+          },
+        )
+      } catch (error) {
+        throw new TaskExecutionError(
+          `无法启动设备 ${execution.deviceSerial} 的业务 Logcat：${error instanceof Error ? error.message : String(error)}`,
+          'LOGCAT_START_FAILED',
+        )
+      }
+      this.database.addLog(
+        taskId,
+        runId,
+        `开始采集设备 ${execution.deviceSerial} 的过滤业务 Logcat：${logTags.join(', ')}`,
+      )
+      // Allow the filtered stream to drain any pre-existing matching line, then
+      // accept startup evidence only from the final business launch onward.
+      await delay(100, signal)
+
+      if (logcatFatal) throw logcatFatal
       update('launching_app', 35, `正在按 ${protocol.name} 启动 APK`)
+      acceptMorphoStartupEvidence = true
+      const startupStartedAt = Date.now()
       await this.adb(buildLaunchArguments(protocol, paths, taskId), signal, 30_000, 'APP_LAUNCH_FAILED')
+
+      if (protocol.id === 'morpho-video-postprocessor-batch-v2') {
+        const startupEvidence = await waitForMorphoStartup({
+          signal,
+          hasBusinessLog: () => morphoBusinessLogStarted,
+          getLogcatFailure: () => logcatFatal,
+          inspect: async (remainingMs) => {
+            const probe = await this.adb(
+              buildMorphoStartupProbeArguments(protocol.packageName),
+              signal,
+              remainingMs,
+              'SDK_START_FAILED',
+            )
+            return parseMorphoStartupProbe(probe.stdout)
+          },
+        })
+        businessStarted = true
+        this.database.addLog(
+          taskId,
+          runId,
+          `Morpho 启动握手通过；证据=${startupEvidence}；耗时=${Date.now() - startupStartedAt}ms`,
+        )
+      } else {
+        if (logcatFatal) throw logcatFatal
+        businessStarted = true
+      }
       this.database.upsertCheck(runId, { key: 'launch', name: '应用启动', status: 'passed' })
 
       update('processing', 45, protocol.id === 'morpho-video-postprocessor-batch-v2'
-        ? 'Morpho 已自动启动，等待批处理完成标记和稳定后视频'
+        ? 'Morpho 业务启动已确认，等待批处理完成标记和稳定后视频'
         : 'APK 已自动启动，等待真实 SDK 生成 result.json 和 output.mp4')
 
+      const processingStartedAt = Date.now()
       if (protocol.completion.mode === 'result_json') {
         if (!paths.remoteResultFile) throw new TaskExecutionError('协议缺少 result.json 路径', 'INVALID_TEST_APK')
         await this.waitForResultJson(taskId, protocol, paths.remoteResultFile, execution.timeoutSeconds * 1000, signal)
@@ -247,8 +358,10 @@ class AdbRunExecutor {
           message: 'Morpho 完成标记、日志和输出文件联合校验通过',
         })
       }
+      this.database.addLog(taskId, runId, `SDK 处理耗时=${Date.now() - processingStartedAt}ms`)
 
       update('validating_output', 78, '正在验证 APK 生成的输出 MP4')
+      const outputCollectionStartedAt = Date.now()
       const remoteOutputFile = detectedRemoteOutputFile ?? paths.remoteOutputFile
       const outputStat = await this.remoteStat(remoteOutputFile, signal)
       if (outputStat <= 0) {
@@ -270,6 +383,18 @@ class AdbRunExecutor {
         key: 'output_generated', name: '输出 MP4 生成', status: 'passed',
         message: `${outputLocalStat.size} bytes；手机原始路径：${remoteOutputFile}`,
       })
+      this.database.setExecutionState({
+        taskId, runId, executionStatus: 'passed', executionFailureCode: null,
+      })
+      const mediaIntegrity = await this.mediaIntegrityChecker.check(localOutput, signal)
+      this.database.recordMediaIntegrity(runId, mediaIntegrity)
+      this.database.upsertCheck(runId, {
+        key: 'media_integrity', name: '输出视频基础完整性', status: mediaIntegrity.status,
+        message: mediaIntegrity.message,
+      })
+      if (mediaIntegrity.status === 'failed') {
+        throw new TaskExecutionError(mediaIntegrity.message, mediaIntegrity.failureCode ?? 'MEDIA_INTEGRITY_FAILED')
+      }
 
       if (!protocol.result.apkGeneratesResultJson) {
         await this.writeBackendResult({
@@ -283,18 +408,31 @@ class AdbRunExecutor {
           remoteOutputFile,
         })
       }
+      this.database.addLog(taskId, runId, `输出验证与回收耗时=${Date.now() - outputCollectionStartedAt}ms`)
 
       update('generating_report', 96, '正在保存日志、截图和兼容性报告')
-      await writeFile(localLogcat, logcatText, 'utf8')
+      // Screenshot collection is part of the test evidence boundary. Keep
+      // Logcat alive until it completes, then stop only this run's process
+      // before device cleanup begins in finally.
       await this.captureScreenshot(runId, path.join(screenshotDir, 'final.png'), signal).catch(() => undefined)
+      if (stopLogcat) {
+        try {
+          await stopLogcat()
+        } catch (error) {
+          logcatWarning = `LOGCAT_WRITE_FAILED：${error instanceof Error ? error.message : String(error)}`
+          this.database.addLog(taskId, runId, logcatWarning, 'warning')
+        }
+        stopLogcat = undefined
+      }
       this.database.setExecutionState({
         taskId, runId, taskStatus: 'passed', runStatus: 'passed',
         phase: 'completed', progress: 100, finished: true,
+        executionStatus: 'passed', executionFailureCode: null,
       })
       this.database.addLog(
         taskId,
         runId,
-        `真实 APK 处理完成；协议 ${protocol.id}；输出 MP4 已回收到平台`,
+        `真实 APK 处理完成；协议 ${protocol.id}；输出 MP4 已回收到平台${logcatWarning ? `；Logcat 告警：${logcatWarning}` : ''}`,
       )
     } catch (error) {
       const cancelled = signal.aborted || this.database.isCancelled(taskId)
@@ -305,22 +443,52 @@ class AdbRunExecutor {
           : 'SDK_PROCESSING_FAILED'
       const failureMessage = cancelled ? '用户取消任务' : error instanceof Error ? error.message : String(error)
       if (!cancelled) {
+        if (stopLogcat) {
+          await stopLogcat().catch((stopError) => {
+            this.database.addLog(
+              taskId,
+              runId,
+              `LOGCAT_WRITE_FAILED：${stopError instanceof Error ? stopError.message : String(stopError)}`,
+              'warning',
+            )
+          })
+          stopLogcat = undefined
+        }
+        await this.streams.captureLogcatSnapshot(
+          runId,
+          path.join(diagnosticsDirectory, 'logcat-full-failure.txt'),
+          signal,
+          16 * 1024 * 1024,
+        ).catch((snapshotError) => {
+          this.database.addLog(
+            taskId,
+            runId,
+            `失败 Logcat 快照采集失败：${snapshotError instanceof Error ? snapshotError.message : String(snapshotError)}`,
+            'warning',
+          )
+        })
         this.database.setExecutionState({
           taskId, runId, taskStatus: 'failed', runStatus: 'failed',
           progress: 100, finished: true, failureCode, failureMessage,
+          executionStatus: failureCode.startsWith('MEDIA_') ? 'passed' : 'failed',
+          executionFailureCode: failureCode.startsWith('MEDIA_') ? null : failureCode,
         })
         this.database.addLog(taskId, runId, `${failureCode}：${failureMessage}`, 'error')
       }
-      await writeFile(localLogcat, logcatText, 'utf8').catch(() => undefined)
+      await writeFile(localLogcat, '', { flag: 'a' }).catch(() => undefined)
     } finally {
-      if (stopLogcat) await stopLogcat().catch(() => undefined)
-      await runProcess(config.adbPath, [
+      if (stopLogcat) {
+        await stopLogcat().catch((error) => {
+          this.database.addLog(taskId, runId, `LOGCAT_WRITE_FAILED：${error instanceof Error ? error.message : String(error)}`, 'warning')
+        })
+      }
+      await this.processRunner.run(this.appConfig.adbPath, [
         '-s', execution.deviceSerial, 'shell', 'am', 'force-stop', protocol.packageName,
       ]).catch(() => undefined)
 
       if (paths) {
         if (protocol.completion.mode === 'result_json') {
-          await runProcess(config.adbPath, [
+          await this.processRunner.run(this.appConfig.adbPath, [
             '-s', execution.deviceSerial, 'shell', 'rm', '-rf', paths.remoteTaskRoot,
           ]).catch(() => undefined)
         } else {
@@ -330,7 +498,7 @@ class AdbRunExecutor {
             paths.remoteOutputFile,
             detectedRemoteOutputFile,
           ].filter((value): value is string => Boolean(value)))]
-          await runProcess(config.adbPath, [
+          await this.processRunner.run(this.appConfig.adbPath, [
             '-s', execution.deviceSerial, 'shell', 'rm', '-f', ...cleanupFiles,
           ]).catch(() => undefined)
         }
@@ -459,7 +627,7 @@ class AdbRunExecutor {
       if (Date.now() - startedAt > 2_000 && !await this.isPackageRunning(protocol.packageName, signal)) {
         throw new TaskExecutionError('测试 APK 进程已退出，且未生成 result.json', 'APP_CRASHED')
       }
-      await delay(config.pollIntervalMs, signal)
+      await delay(this.appConfig.pollIntervalMs, signal)
     }
     throw new TaskExecutionError(`超过 ${Math.round(timeoutMs / 1000)} 秒仍未收到 result.json`, 'TASK_TIMEOUT')
   }
@@ -494,7 +662,7 @@ class AdbRunExecutor {
       if (Date.now() - startedAt > 3_000 && !await this.isPackageRunning(protocol.packageName, signal)) {
         throw new TaskExecutionError('Morpho 进程已退出，且没有生成完成标记', 'APP_CRASHED')
       }
-      await delay(config.pollIntervalMs, signal)
+      await delay(this.appConfig.pollIntervalMs, signal)
     }
     throw new TaskExecutionError(
       `超过 ${Math.round(timeoutMs / 1000)} 秒仍未检测到 Morpho 完成标记`,
@@ -534,13 +702,43 @@ class AdbRunExecutor {
     }
   }
 
+  private async assertLogcatDiskSpace(localRunDir: string) {
+    await mkdir(localRunDir, { recursive: true })
+    const disk = await statfs(localRunDir)
+    const availableBytes = disk.bavail * disk.bsize
+    const requiredBytes = this.appConfig.minFreeDiskBytes + Math.min(this.appConfig.maxLogcatBytes, 16 * 1024 * 1024)
+    if (availableBytes < requiredBytes) {
+      throw new TaskExecutionError(
+        `Logcat 磁盘空间不足：当前 ${availableBytes} 字节，需要至少 ${requiredBytes} 字节`,
+        'INSUFFICIENT_LOGCAT_DISK_SPACE',
+      )
+    }
+  }
+
+  private describeLogcatEvent(event: LogcatStreamEvent) {
+    if (event.type === 'truncated') return `LOGCAT_TRUNCATED：日志达到 ${event.maxBytes} 字节上限，已停止当前设备的日志采集，业务测试继续`
+    if (event.type === 'write_failed') return `LOGCAT_WRITE_FAILED：${event.error.message}`
+    const detail = event.stderr ? `；${event.stderr}` : ''
+    return `LOGCAT_PROCESS_EXITED：Logcat 进程异常退出（code=${event.code ?? 'null'}，signal=${event.signal ?? 'null'}）${detail}`
+  }
+
   private startLogcat(
     executionKey: string,
-    logTag: string,
+    targetPath: string,
     signal: AbortSignal,
+    tags: readonly string[],
     onLine: (line: string) => void,
+    onEvent: (event: LogcatStreamEvent) => void,
   ) {
-    return this.streams.startLogcat(executionKey, logTag, signal, onLine)
+    return this.streams.startLogcat(
+      executionKey,
+      targetPath,
+      signal,
+      tags,
+      onLine,
+      onEvent,
+      Math.min(this.appConfig.maxLogcatBytes, 16 * 1024 * 1024),
+    )
   }
 
   private captureScreenshot(executionKey: string, targetPath: string, signal: AbortSignal) {

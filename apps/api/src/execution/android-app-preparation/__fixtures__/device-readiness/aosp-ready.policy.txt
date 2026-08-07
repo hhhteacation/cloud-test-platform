@@ -1,0 +1,2 @@
+mKeyguardShowing=false
+isKeyguardSecure=false

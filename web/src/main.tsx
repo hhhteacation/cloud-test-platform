@@ -18,10 +18,17 @@ ReactDOM.createRoot(rootElement).render(
       locale={zhCN}
       theme={{
         token: {
-          colorPrimary: '#1677ff',
-          borderRadius: 8,
+          colorPrimary: '#19734b',
+          colorInfo: '#19734b',
+          colorLink: '#19734b',
+          colorSuccess: '#19734b',
+          colorBgLayout: '#f3f1ea',
+          colorBgContainer: '#fbfaf6',
+          colorText: '#151a16',
+          colorBorder: '#d8d7cf',
+          borderRadius: 5,
           fontFamily:
-            'Inter, -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif',
+            '-apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif',
         },
       }}
     >

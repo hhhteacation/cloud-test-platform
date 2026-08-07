@@ -13,7 +13,7 @@ import type {
   AndroidPreparationDeviceFactory,
   DiagnosticScreenshotCapture,
 } from './contracts.js'
-import { DeviceReadinessGuard } from './device-readiness.js'
+import { AndroidDeviceReadiness } from './device-readiness.js'
 import { PostLaunchDialogCoordinator } from './post-launch-dialog-coordinator.js'
 import { RuntimePermissionDialogCoordinator } from './runtime-permission-dialog-coordinator.js'
 import { RuntimePermissionManager } from './runtime-permissions.js'
@@ -50,20 +50,29 @@ export class DefaultAndroidAppPreparer implements AndroidAppPreparer {
     const captureScreenshot = this.dependencies.captureScreenshot
       ?? this.createScreenshotCapture(request.deviceSerial)
     const dialogs = new SystemDialogController(device, captureScreenshot)
-    const readiness = new DeviceReadinessGuard(device)
+    const readiness = new AndroidDeviceReadiness(device)
     const installer = new ApkInstallCoordinator(device, dialogs)
     const permissions = new RuntimePermissionManager(device)
     const permissionDialogs = new RuntimePermissionDialogCoordinator(permissions, dialogs)
     const postLaunchDialogs = new PostLaunchDialogCoordinator(dialogs)
 
-    await readiness.ensureReady(request.signal)
+    const readinessObservation = await readiness.prepare(request.signal)
+    if (readinessObservation.condition !== 'ready') {
+      request.onEvent({
+        phase: 'installing_apk',
+        progress: 10,
+        message: `DEVICE_READINESS condition=${readinessObservation.condition} evidence=${readinessObservation.summary} phase=before_install`,
+      })
+    }
 
+    const installStartedAt = Date.now()
     const handledDialogs = await installer.install({
       packageName: request.protocol.packageName,
       applicationLabel: applicationLabel(request.protocol.packageName),
       apkPath: request.apkPath,
       installMode: request.protocol.install.mode,
       manufacturer: request.deviceManufacturer,
+      deviceModel: request.deviceModel,
       diagnosticsDirectory: request.diagnosticsDirectory,
       automation: request.protocol.install.dialogAutomation,
       signal: request.signal,
@@ -73,6 +82,7 @@ export class DefaultAndroidAppPreparer implements AndroidAppPreparer {
     if (!await device.isPackageInstalled(request.protocol.packageName, request.signal)) {
       throw new TaskExecutionError('ADB 安装命令已结束，但系统中未找到目标 APK', 'APK_INSTALL_FAILED')
     }
+    const installMs = Date.now() - installStartedAt
     request.onEvent({ phase: 'installing_apk', progress: 18, message: 'APK 安装完成并已验证包名' })
 
     if (request.protocol.requiresRunAs) {
@@ -88,6 +98,7 @@ export class DefaultAndroidAppPreparer implements AndroidAppPreparer {
       }
     }
 
+    const permissionStartedAt = Date.now()
     const requestedPermissions = request.protocol.install.runtimePermissions ?? []
     const permissionPreparation = await permissions.grantAndVerify(
       request.protocol.packageName,
@@ -198,6 +209,10 @@ export class DefaultAndroidAppPreparer implements AndroidAppPreparer {
       cleanInstalled: request.protocol.install.mode === 'clean',
       grantedPermissions,
       handledDialogs,
+      timings: {
+        installMs,
+        permissionMs: Date.now() - permissionStartedAt,
+      },
     }
   }
 

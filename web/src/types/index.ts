@@ -17,6 +17,36 @@ export type CheckStatus = 'passed' | 'failed' | 'blocked'
 export type ArtifactKind = 'apk' | 'video'
 export type DevicePlatform = 'android' | 'ios' | 'harmonyos'
 export type DeviceConnectionStatus = 'online' | 'offline' | 'unauthorized' | 'unknown'
+export type DeviceConnectionKind = 'usb' | 'network'
+export type TaskConnectionMode = 'auto' | 'usb' | 'network'
+export type DeviceQueueStatus = 'idle' | 'queued' | 'running'
+
+export interface DeviceEndpoint {
+  id: string
+  deviceId: string
+  kind: DeviceConnectionKind
+  adbSerial: string
+  host?: string
+  port?: number
+  status: DeviceConnectionStatus
+  lastSeenAt?: string
+  lastError?: string
+}
+export type ExecutionStatus = 'pending' | 'running' | 'passed' | 'failed' | 'cancelled'
+export type MediaIntegrityStatus = 'not_checked' | 'passed' | 'failed' | 'blocked'
+
+export interface MediaMetadata {
+  sizeBytes: number
+  container?: string
+  videoCodec?: string
+  width?: number
+  height?: number
+  frameRate?: number
+  frameCount?: number
+  durationSeconds?: number
+  hasAudio: boolean
+  audioCodec?: string
+}
 
 export type DeviceRunPhase =
   | 'validating_device'
@@ -118,10 +148,18 @@ export interface DeviceProfile {
   registeredAt?: string
   lastSeenAt?: string
   connectionStatus?: DeviceConnectionStatus
+  endpoints?: Partial<Record<DeviceConnectionKind, DeviceEndpoint>>
+  overallConnectionStatus?: DeviceConnectionStatus
+  selectable?: boolean
+  unavailableReason?: string
+  queueStatus?: DeviceQueueStatus
 }
 
 export interface DeviceDiscoveryCandidate {
+  /** ADB transport serial. Network transports use host:port here. */
   serial: string
+  /** Stable Android hardware identity when the backend could verify it. */
+  hardwareSerial?: string
   platform: 'android'
   manufacturer?: string
   name?: string
@@ -133,6 +171,9 @@ export interface DeviceDiscoveryCandidate {
   securityPatch?: string
   connectionStatus: DeviceConnectionStatus
   registeredDeviceId?: string
+  kind?: DeviceConnectionKind
+  host?: string
+  port?: number
 }
 
 export interface CheckResult {
@@ -171,8 +212,16 @@ export interface DeviceRunResult {
   finishedAt?: string
   mode: '模拟结果' | 'ADB 真机'
   adapter?: 'DemoPlaybackAdapter' | 'RealSdkAdapter' | string
+  connectionKind?: DeviceConnectionKind
+  endpointId?: string
+  adbSerial?: string
   failureCode?: string
   failureMessage?: string
+  executionStatus?: ExecutionStatus
+  executionFailureCode?: string
+  mediaIntegrityStatus?: MediaIntegrityStatus
+  mediaIntegrityFailureCode?: string
+  mediaMetadata?: MediaMetadata
   logcatUrl?: string
   screenshotUrl?: string
 }
@@ -208,6 +257,7 @@ export interface TestTask {
   apk?: Artifact
   asset: Artifact
   deviceIds: string[]
+  connectionMode?: TaskConnectionMode
   status: TestTaskStatus
   progress: number
   passRate?: number
@@ -229,6 +279,7 @@ export interface CreateTaskInput {
   apkArtifactId: string
   videoArtifactId: string
   deviceIds: string[]
+  connectionMode?: TaskConnectionMode
   testPlan: {
     type: 'sdk-video-processing-compatibility'
     timeoutSeconds: number
@@ -241,6 +292,13 @@ export interface MockCreateTaskInput {
   apk: ApkAsset
   asset: VideoAsset
   deviceIds: string[]
+  connectionMode: TaskConnectionMode
+  executions: Array<{
+    deviceId: string
+    endpointId: string
+    connectionKind: DeviceConnectionKind
+    adbSerial: string
+  }>
 }
 
 export type TaskUpdateListener = (task: TestTask) => void
@@ -256,7 +314,13 @@ export interface TestRunner {
 export interface TestPlatformClient {
   readonly mode: 'mock' | 'real'
   listDevices(): Promise<DeviceProfile[]>
+  refreshDevices(): Promise<DeviceProfile[]>
   discoverDevices(): Promise<DeviceDiscoveryCandidate[]>
+  discoverNetworkDevices(): Promise<DeviceDiscoveryCandidate[]>
+  connectNetworkDevice(deviceId: string, host: string, port: number): Promise<DeviceEndpoint>
+  disconnectNetworkDevice(deviceId: string, endpointId: string): Promise<DeviceEndpoint>
+  refreshNetworkDevice(deviceId: string, endpointId: string): Promise<DeviceEndpoint>
+  removeNetworkDevice(deviceId: string, endpointId: string): Promise<void>
   registerDevice(serial: string): Promise<DeviceProfile>
   uploadArtifact(file: File, kind: ArtifactKind): Promise<Artifact>
   createTask(input: CreateTaskInput): Promise<TestTask>

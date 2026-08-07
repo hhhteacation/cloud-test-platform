@@ -14,6 +14,7 @@ interface InstallRequest {
   apkPath: string
   installMode: 'replace' | 'clean'
   manufacturer: string
+  deviceModel?: string
   diagnosticsDirectory: string
   automation?: ApkDialogAutomationConfig
   signal: AbortSignal
@@ -127,6 +128,7 @@ export class ApkInstallCoordinator {
 
     const inspectionOptions: DialogInspectionOptions = {
       manufacturer: request.manufacturer,
+      deviceModel: request.deviceModel,
       packageName: request.packageName,
       applicationLabel: request.applicationLabel,
       profileIds: automation.profileIds,
@@ -134,6 +136,34 @@ export class ApkInstallCoordinator {
       maxActions: automation.maxActions,
       signal: installController.signal,
       activeInstall: true,
+    }
+
+    const acceptRecognizedInspection = (
+      inspection: Awaited<ReturnType<SystemDialogController['inspectAndHandle']>>,
+    ) => {
+      if (inspection.kind === 'handled') {
+        repeatedUnknownFingerprint = undefined
+        repeatedUnknownSince = 0
+        handledDialogs.push(inspection.dialog)
+        request.onEvent({
+          phase: 'handling_install_dialog',
+          progress: 17,
+          message: `已通过严格白名单 ${inspection.dialog.profileId} 自动执行 ${inspection.dialog.action}`,
+        })
+        return true
+      }
+      if (inspection.kind === 'manual-action-required') {
+        repeatedUnknownFingerprint = undefined
+        repeatedUnknownSince = 0
+        request.onEvent({
+          phase: 'handling_install_dialog',
+          progress: 17,
+          message: inspection.block.summary,
+        })
+        installController.abort()
+        throw new TaskExecutionError(inspection.block.summary, 'INSTALL_USER_ACTION_REQUIRED')
+      }
+      return false
     }
 
     const startedAt = Date.now()
@@ -149,17 +179,8 @@ export class ApkInstallCoordinator {
         }
 
         const inspection = await this.dialogs.inspectAndHandle(inspectionOptions)
-        if (inspection.kind === 'handled') {
-          repeatedUnknownFingerprint = undefined
-          repeatedUnknownSince = 0
-          handledDialogs.push(inspection.dialog)
-          request.onEvent({
-            phase: 'handling_install_dialog',
-            progress: 17,
-            message: `已通过严格白名单 ${inspection.dialog.profileId} 自动执行 ${inspection.dialog.action}`,
-          })
-          continue
-        }
+        if (acceptRecognizedInspection(inspection)) continue
+
         if (inspection.kind === 'unrecognized') {
           const now = Date.now()
           if (inspection.fingerprint !== repeatedUnknownFingerprint) {
@@ -172,6 +193,25 @@ export class ApkInstallCoordinator {
             })
           }
           if (now - repeatedUnknownSince >= unrecognizedGraceMs) {
+            // The timeout diagnostics used to capture a newer frame after the
+            // unrecognized decision. On slowly rendering OEM installers this
+            // could save a fully recognizable page while still reporting the
+            // stale frame as INSTALL_DIALOG_UNRECOGNIZED. Reclassify once at
+            // the boundary before committing to the failure.
+            const finalInspection = await this.dialogs.inspectAndHandle(inspectionOptions)
+            if (acceptRecognizedInspection(finalInspection)) continue
+            if (finalInspection.kind === 'none') {
+              repeatedUnknownFingerprint = undefined
+              repeatedUnknownSince = 0
+              continue
+            }
+            if (finalInspection.kind === 'unrecognized'
+              && finalInspection.fingerprint !== inspection.fingerprint) {
+              repeatedUnknownFingerprint = finalInspection.fingerprint
+              repeatedUnknownSince = Date.now()
+              continue
+            }
+
             await this.dialogs.saveTimeoutDiagnostics(inspectionOptions)
             installController.abort()
             throw new TaskExecutionError(

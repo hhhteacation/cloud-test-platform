@@ -24,6 +24,25 @@ function legacyTask(status: TestTask['status']): Omit<TestTask, 'capabilities'> 
   }
 }
 
+describe('HttpTestPlatformClient device refresh', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('refreshDevices 使用 POST /devices/refresh 并返回刷新后的设备列表', async () => {
+    const devices = [{
+      id: 'device-1', platform: 'android', name: '测试机', manufacturer: 'Example',
+      osVersion: 'Android 15', apiLevel: 35, architecture: 'arm64-v8a', executionMode: 'adb', eligible: true,
+    }]
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(devices), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const client = new HttpTestPlatformClient('/api')
+    await expect(client.refreshDevices()).resolves.toEqual(devices)
+    expect(fetchMock).toHaveBeenCalledWith('/api/devices/refresh', { method: 'POST' })
+  })
+})
+
 describe('HttpTestPlatformClient task normalization', () => {
   afterEach(() => vi.unstubAllGlobals())
 
@@ -62,4 +81,11 @@ describe('HttpTestPlatformClient task normalization', () => {
 
     expect(task?.capabilities).toEqual(serverTask.capabilities)
   })
+
+  it('DELETE 联网 Endpoint 的 204 响应不会继续解析 JSON', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 204 })))
+    const client = new HttpTestPlatformClient('/api')
+    await expect(client.removeNetworkDevice('device-1', 'endpoint-1')).resolves.toBeUndefined()
+  })
+
 })

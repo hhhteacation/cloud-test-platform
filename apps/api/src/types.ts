@@ -6,6 +6,43 @@ export type RunStatus = 'queued' | 'running' | 'passed' | 'failed' | 'blocked'
 export type CheckStatus = 'passed' | 'failed' | 'blocked'
 export type DevicePlatform = 'android' | 'ios' | 'harmonyos'
 export type DeviceConnectionStatus = 'online' | 'offline' | 'unauthorized' | 'unknown'
+export type DeviceConnectionKind = 'usb' | 'network'
+export type TaskConnectionMode = 'auto' | 'usb' | 'network'
+export type DeviceQueueStatus = 'idle' | 'queued' | 'running'
+
+export interface DeviceEndpoint {
+  id: string
+  deviceId: string
+  kind: DeviceConnectionKind
+  adbSerial: string
+  host?: string
+  port?: number
+  status: DeviceConnectionStatus
+  lastSeenAt?: string
+  lastError?: string
+}
+export type ExecutionStatus = 'pending' | 'running' | 'passed' | 'failed' | 'cancelled'
+export type MediaIntegrityStatus = 'not_checked' | 'passed' | 'failed' | 'blocked'
+
+export interface MediaMetadata {
+  sizeBytes: number
+  container?: string
+  videoCodec?: string
+  width?: number
+  height?: number
+  frameRate?: number
+  frameCount?: number
+  durationSeconds?: number
+  hasAudio: boolean
+  audioCodec?: string
+}
+
+export interface MediaIntegrityResult {
+  status: 'passed' | 'failed'
+  failureCode?: string
+  message: string
+  metadata?: MediaMetadata
+}
 
 export type DeviceRunPhase =
   | 'validating_device'
@@ -51,10 +88,18 @@ export interface DeviceProfile {
   registeredAt?: string
   lastSeenAt?: string
   connectionStatus?: DeviceConnectionStatus
+  endpoints?: Partial<Record<DeviceConnectionKind, DeviceEndpoint>>
+  overallConnectionStatus?: DeviceConnectionStatus
+  selectable?: boolean
+  unavailableReason?: string
+  queueStatus?: DeviceQueueStatus
 }
 
 export interface DeviceDiscoveryCandidate {
+  /** ADB transport serial. Network transports use host:port here. */
   serial: string
+  /** Stable Android hardware identity read from ro.serialno/ro.boot.serialno. */
+  hardwareSerial?: string
   platform: 'android'
   manufacturer?: string
   name?: string
@@ -66,6 +111,9 @@ export interface DeviceDiscoveryCandidate {
   securityPatch?: string
   connectionStatus: DeviceConnectionStatus
   registeredDeviceId?: string
+  kind?: DeviceConnectionKind
+  host?: string
+  port?: number
 }
 
 export interface CheckResult {
@@ -101,8 +149,16 @@ export interface DeviceRunView {
   startedAt?: string
   finishedAt?: string
   mode: 'ADB 真机'
+  connectionKind?: DeviceConnectionKind
+  endpointId?: string
+  adbSerial?: string
   failureCode?: string
   failureMessage?: string
+  executionStatus?: ExecutionStatus
+  executionFailureCode?: string
+  mediaIntegrityStatus?: MediaIntegrityStatus
+  mediaIntegrityFailureCode?: string
+  mediaMetadata?: MediaMetadata
   logcatUrl?: string
   screenshotUrl?: string
 }
@@ -149,6 +205,7 @@ export interface TestTaskView {
   apk: ArtifactView
   asset: ArtifactView
   deviceIds: string[]
+  connectionMode?: TaskConnectionMode
   status: TaskStatus
   progress: number
   passRate?: number

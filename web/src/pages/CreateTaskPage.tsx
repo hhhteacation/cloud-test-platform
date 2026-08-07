@@ -8,6 +8,7 @@ import {
   Input,
   List,
   Row,
+  Segmented,
   Tag,
   Typography,
   message,
@@ -22,7 +23,7 @@ import { SubmitProgress } from '../components/task/SubmitProgress'
 import { VideoSelector } from '../components/task/VideoSelector'
 import { isRealPlatform, platformClient } from '../platform/client'
 import { PlatformApiError } from '../platform/errors'
-import type { Artifact, DeviceProfile } from '../types'
+import type { Artifact, TaskConnectionMode } from '../types'
 import { usePlatformDevices } from '../platform/usePlatformData'
 import {
   TEST_NOTES,
@@ -42,6 +43,7 @@ export function CreateTaskPage() {
   const [videoFile, setVideoFile] = useState<File>()
   const [previewUrl, setPreviewUrl] = useState<string>()
   const [deviceIds, setDeviceIds] = useState<string[]>([])
+  const [connectionMode, setConnectionMode] = useState<TaskConnectionMode>('auto')
   const [submitting, setSubmitting] = useState(false)
   const [submitStep, setSubmitStep] = useState(-1)
   const [submitError, setSubmitError] = useState<string>()
@@ -91,6 +93,8 @@ export function CreateTaskPage() {
       devices,
       devicesLoading,
       devicesError,
+      connectionMode,
+      platformMode: platformClient.mode,
     })
     if (validationError) return showSubmitError(validationError, setSubmitError)
 
@@ -103,7 +107,7 @@ export function CreateTaskPage() {
     try {
       const task = await createTaskWithUploads(
         platformClient,
-        { name, apkFile: selectedApk, videoFile: selectedVideo, deviceIds },
+        { name, apkFile: selectedApk, videoFile: selectedVideo, deviceIds, connectionMode },
         { onStep: setSubmitStep, onApkUploaded: setUploadedApk },
       )
       message.success(isRealPlatform ? '真实 ADB 测试任务已创建' : 'Mock 测试任务已创建')
@@ -133,8 +137,8 @@ export function CreateTaskPage() {
           className="mode-alert"
           type="warning"
           showIcon
-          message="当前没有配置 VITE_API_BASE_URL，页面使用浏览器 Mock 数据"
-          description="启动完整平台时设置 VITE_API_BASE_URL=/api，然后同时运行前端和 Fastify 后端。"
+          message="当前显式启用了浏览器 Mock 演示模式"
+          description="Mock 不会连接数据库或真机。请移除 VITE_PLATFORM_MODE=mock，并使用 pnpm dev 同时启动前端和 Fastify 后端。"
         />
       )}
       {devicesError && <Alert type="error" showIcon message="设备列表加载失败" description={devicesError} />}
@@ -159,6 +163,16 @@ export function CreateTaskPage() {
                   showIcon
                 />
               </Form.Item>
+              {isRealPlatform && (
+                <Form.Item label="Logcat 采集说明">
+                  <Alert
+                    message="每台设备执行前会清空该设备的全部 Logcat 缓冲区"
+                    description="平台会为每个设备执行独立保存全量 Logcat，并且只停止本次执行创建的采集进程。清空不会停止 IDE 或其他工具的 Logcat 进程，但会删除同一设备上尚未保存的历史日志。"
+                    type="warning"
+                    showIcon
+                  />
+                </Form.Item>
+              )}
               <Form.Item label="测试应用（APK）" required>
                 <ApkSelector
                   file={apkFile}
@@ -197,9 +211,26 @@ export function CreateTaskPage() {
             </Card>
           </Col>
           <Col span={9}>
+            <Card title="连接方式" className="form-card">
+              <Segmented
+                block
+                value={connectionMode}
+                disabled={submitting}
+                onChange={(value) => setConnectionMode(value as TaskConnectionMode)}
+                options={[
+                  { value: 'auto', label: '自动选择' },
+                  { value: 'usb', label: '仅数据线' },
+                  { value: 'network', label: '仅联网' },
+                ]}
+              />
+              <Typography.Paragraph type="secondary" className="connection-mode-help">
+                {connectionMode === 'auto' ? '优先使用 USB；USB 不可用时使用联网连接。' : connectionMode === 'usb' ? '任务只使用已授权且在线的 USB 连接。' : '任务只使用已连接的联网 ADB Endpoint。'}
+              </Typography.Paragraph>
+            </Card>
             <DeviceMatrixSelector
               devices={selectableDevices}
               selectedIds={deviceIds}
+              connectionMode={connectionMode}
               loading={devicesLoading}
               disabled={submitting}
               realMode={isRealPlatform}

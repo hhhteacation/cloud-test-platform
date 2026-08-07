@@ -13,6 +13,7 @@ export interface UiNode {
   packageName: string
   className: string
   clickable: boolean
+  enabled: boolean
   checkable: boolean
   checked: boolean
   bounds?: UiBounds
@@ -75,6 +76,7 @@ export function parseUiNodes(rawOutput: string): UiNode[] {
       packageName: attribute(attributes, 'package'),
       className: attribute(attributes, 'class'),
       clickable: attribute(attributes, 'clickable') === 'true',
+      enabled: attribute(attributes, 'enabled') === 'true',
       checkable: attribute(attributes, 'checkable') === 'true',
       checked: attribute(attributes, 'checked') === 'true',
       bounds: parseBounds(attribute(attributes, 'bounds')),

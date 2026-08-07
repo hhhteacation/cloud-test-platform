@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { DeviceRunJob, PlatformDatabase } from './database.js'
-import { DeviceQueueManager, type DeviceRunWorker } from './queue.js'
+import { DeviceQueueManager, QueueNotAcceptingError, type DeviceRunWorker } from './queue.js'
 
 function deferred() {
   let resolve!: () => void
@@ -121,4 +121,46 @@ describe('DeviceQueueManager', () => {
     expect(database.cancelled).toContain('task-cancel')
     expect(cancelled).toEqual(['task-cancel'])
   })
+  it('关闭等待超时后会主动取消运行中任务并等待清理', async () => {
+    const database = new QueueDatabaseFake()
+    database.jobs = [{ taskId: 'task-stuck', runId: 'run-stuck', deviceId: 'device-a' }]
+    const gate = deferred()
+    const cancelled: string[] = []
+    const worker: DeviceRunWorker = {
+      async execute() { await gate.promise },
+      cancelTask(taskId) {
+        cancelled.push(taskId)
+        gate.resolve()
+      },
+    }
+    const queue = new DeviceQueueManager(database as unknown as PlatformDatabase, worker)
+    queue.restore()
+    await waitFor(() => !queue.isIdle())
+
+    await expect(queue.shutdown(1, 1_000)).resolves.toBe(true)
+    expect(database.cancelled).toContain('task-stuck')
+    expect(cancelled).toEqual(['task-stuck'])
+    expect(queue.isIdle()).toBe(true)
+  })
+
+  it('停止接收后拒绝新任务，并可等待正在执行的任务清理完成', async () => {
+    const database = new QueueDatabaseFake()
+    database.jobs = [{ taskId: 'task-1', runId: 'run-1', deviceId: 'device-a' }]
+    const gate = deferred()
+    const worker: DeviceRunWorker = {
+      async execute() { await gate.promise },
+      cancelTask() {},
+    }
+    const queue = new DeviceQueueManager(database as unknown as PlatformDatabase, worker)
+    queue.restore()
+    await waitFor(() => !queue.isIdle())
+    queue.stopAccepting()
+
+    expect(() => queue.enqueueTask('task-1')).toThrow(QueueNotAcceptingError)
+    const shutdown = queue.shutdown(1_000)
+    gate.resolve()
+    await expect(shutdown).resolves.toBe(true)
+    expect(queue.isIdle()).toBe(true)
+  })
+
 })

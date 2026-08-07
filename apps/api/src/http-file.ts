@@ -25,8 +25,28 @@ export async function sendVideoFile(
 
   const match = /^bytes=(\d*)-(\d*)$/.exec(range)
   if (!match) return reply.code(416).send({ code: 'INVALID_RANGE', message: '无效的视频 Range 请求' })
-  const start = match[1] ? Number(match[1]) : 0
-  const end = match[2] ? Number(match[2]) : fileStat.size - 1
+  const hasStart = match[1] !== ''
+  const hasEnd = match[2] !== ''
+  if (!hasStart && !hasEnd) {
+    reply.header('Content-Range', `bytes */${fileStat.size}`)
+    return reply.code(416).send()
+  }
+
+  let start: number
+  let end: number
+  if (!hasStart) {
+    const suffixLength = Number(match[2])
+    if (!Number.isSafeInteger(suffixLength) || suffixLength <= 0) {
+      reply.header('Content-Range', `bytes */${fileStat.size}`)
+      return reply.code(416).send()
+    }
+    start = Math.max(0, fileStat.size - suffixLength)
+    end = fileStat.size - 1
+  } else {
+    start = Number(match[1])
+    end = hasEnd ? Number(match[2]) : fileStat.size - 1
+  }
+
   if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start || start >= fileStat.size) {
     reply.header('Content-Range', `bytes */${fileStat.size}`)
     return reply.code(416).send()

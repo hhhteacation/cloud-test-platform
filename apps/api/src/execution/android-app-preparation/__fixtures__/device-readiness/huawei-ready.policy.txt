@@ -1,0 +1,8 @@
+KeyguardServiceDelegate
+  showing=false
+  showingAndNotOccluded=true
+  secure=false
+  screenState=SCREEN_STATE_ON
+  interactiveState=INTERACTIVE_STATE_AWAKE
+  KeyguardStateMonitor
+    mIsShowing=false

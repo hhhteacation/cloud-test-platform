@@ -1,10 +1,15 @@
 import { randomUUID } from 'node:crypto'
 import { cp, mkdir, rename, rm, stat, writeFile } from 'node:fs/promises'
-import path from 'node:path'
 import { backup, DatabaseSync } from 'node:sqlite'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const rootDir = process.cwd()
-const dataDir = path.resolve(process.env.CLOUD_TEST_DATA_DIR ?? path.join(rootDir, 'data'))
+const rootDir = path.resolve(fileURLToPath(new URL('../', import.meta.url)))
+const configuredDataDir = process.env.CLOUD_TEST_DATA_DIR?.trim()
+if (configuredDataDir && !path.isAbsolute(configuredDataDir)) {
+  throw new Error('CLOUD_TEST_DATA_DIR 必须是绝对路径')
+}
+const dataDir = path.normalize(configuredDataDir || path.join(rootDir, 'data'))
 const databasePath = path.join(dataDir, 'cloud-test.sqlite')
 const backupsDir = path.join(dataDir, 'backups')
 const timestamp = new Date().toISOString().replaceAll(':', '-').replaceAll('.', '-')
@@ -33,14 +38,8 @@ async function copyDirectoryIfPresent(name) {
 
 function readTableCounts(db) {
   const expectedTables = [
-    'devices',
-    'artifacts',
-    'tasks',
-    'device_runs',
-    'check_results',
-    'task_logs',
-    'task_outputs',
-    'task_deletion_audits',
+    'devices', 'artifacts', 'tasks', 'device_runs', 'check_results',
+    'task_logs', 'task_outputs', 'task_deletion_audits',
   ]
   const existingTables = new Set(
     db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map((row) => String(row.name)),
@@ -82,11 +81,7 @@ try {
   await rename(temporaryDir, finalDir)
   process.stdout.write(`备份完成：${finalDir}\n`)
 } catch (error) {
-  try {
-    sourceDatabase?.close()
-  } catch {
-    // 保留原始备份异常。
-  }
+  try { sourceDatabase?.close() } catch { /* 保留原始异常。 */ }
   await rm(temporaryDir, { recursive: true, force: true })
   throw error
 }

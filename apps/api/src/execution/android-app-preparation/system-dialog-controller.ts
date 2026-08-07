@@ -8,9 +8,15 @@ import type {
   HandledDialog,
 } from './contracts.js'
 import {
+  evaluateDialogProfiles,
   KNOWN_DIALOG_WINDOW_PACKAGES,
-  matchDialogAction,
+  type DialogBlockMatch,
+  type DialogTapTarget,
 } from './dialog-profiles.js'
+import {
+  createInputAutomationDeniedError,
+  isInputInjectionDenied,
+} from './input-automation-compatibility.js'
 import {
   boundsCenter,
   extractFocusedWindowComponent,
@@ -22,6 +28,7 @@ import {
 
 export interface DialogInspectionOptions {
   manufacturer: string
+  deviceModel?: string
   packageName: string
   applicationLabel: string
   profileIds: readonly string[]
@@ -34,6 +41,7 @@ export interface DialogInspectionOptions {
 export type DialogInspectionResult =
   | { kind: 'none' }
   | { kind: 'handled'; dialog: HandledDialog }
+  | { kind: 'manual-action-required'; block: DialogBlockMatch }
   | { kind: 'unrecognized'; fingerprint: string }
 
 interface WindowSnapshot {
@@ -52,6 +60,16 @@ const TRUSTED_SYSTEM_PREFIXES = [
 ]
 
 const UI_DUMP_REMOTE_PATH = '/data/local/tmp/sdk-compat-window.xml'
+
+function resolveTapPoint(target: DialogTapTarget) {
+  const bounds = target.node.bounds!
+  if (target.kind === 'node-center') return boundsCenter(bounds)
+
+  return {
+    x: Math.round(bounds.left + (bounds.right - bounds.left) * target.xRatio),
+    y: Math.round(bounds.top + (bounds.bottom - bounds.top) * target.yRatio),
+  }
+}
 
 /**
  * Strict UI Automator controller. It only clicks a node selected by a registered
@@ -96,17 +114,24 @@ export class SystemDialogController {
       )
     }
 
-    const match = matchDialogAction(options.profileIds, {
+    const matchContext = {
       manufacturer: options.manufacturer,
+      deviceModel: options.deviceModel,
       packageName: options.packageName,
       applicationLabel: options.applicationLabel,
       focusedWindowPackage,
       focusedWindowComponent: window.focusedWindowComponent,
       activeInstall: options.activeInstall ?? false,
       nodes,
-    })
+    }
 
-    if (!match) {
+    const decision = evaluateDialogProfiles(options.profileIds, matchContext)
+    if (decision.kind === 'block') {
+      await this.saveDiagnostics(options.diagnosticsDirectory, window.diagnosticsText, xml, options.signal)
+      return { kind: 'manual-action-required', block: decision.block }
+    }
+
+    if (decision.kind === 'none') {
       const actionableText = nodes
         .filter((node) => node.clickable)
         .map(nodeSearchText)
@@ -117,6 +142,8 @@ export class SystemDialogController {
       }
     }
 
+    const match = decision.action
+
     if (this.actionCount >= options.maxActions) {
       await this.saveDiagnostics(options.diagnosticsDirectory, window.diagnosticsText, xml, options.signal)
       throw new TaskExecutionError(
@@ -125,6 +152,7 @@ export class SystemDialogController {
       )
     }
 
+    const tapPoint = resolveTapPoint(match.tapTarget)
     const fingerprint = [
       focusedWindowPackage,
       match.profileId,
@@ -133,6 +161,9 @@ export class SystemDialogController {
       match.node.text,
       match.node.contentDescription,
       JSON.stringify(match.node.bounds),
+      match.tapTarget.kind,
+      tapPoint.x,
+      tapPoint.y,
     ].join(':')
     if (this.clickedNodeFingerprints.has(fingerprint)) {
       await this.saveDiagnostics(options.diagnosticsDirectory, window.diagnosticsText, xml, options.signal)
@@ -142,13 +173,24 @@ export class SystemDialogController {
       )
     }
 
-    const center = boundsCenter(match.node.bounds!)
-    await this.device.run(
-      ['shell', 'input', 'tap', String(center.x), String(center.y)],
-      options.signal,
-      10_000,
-      'INSTALL_DIALOG_UNRECOGNIZED',
-    )
+    try {
+      await this.device.run(
+        ['shell', 'input', 'tap', String(tapPoint.x), String(tapPoint.y)],
+        options.signal,
+        10_000,
+        'INSTALL_DIALOG_UNRECOGNIZED',
+      )
+    } catch (error) {
+      if (!isInputInjectionDenied(error)) throw error
+
+      await this.saveDiagnostics(
+        options.diagnosticsDirectory,
+        window.diagnosticsText,
+        xml,
+        options.signal,
+      )
+      throw createInputAutomationDeniedError(options.manufacturer)
+    }
     this.clickedNodeFingerprints.add(fingerprint)
     this.actionCount += 1
 

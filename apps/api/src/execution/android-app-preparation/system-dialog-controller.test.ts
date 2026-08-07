@@ -1,8 +1,12 @@
 import { readFileSync } from 'node:fs'
+import { mkdtemp, readdir, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
 import type { ProcessResult } from '../../process.js'
+import { TaskExecutionError } from '../execution-errors.js'
 import type { AndroidPreparationDevice } from './contracts.js'
 import { SystemDialogController } from './system-dialog-controller.js'
 
@@ -15,11 +19,12 @@ class DialogFakeDevice implements AndroidPreparationDevice {
   readonly calls: string[][] = []
 
   constructor(
-    private readonly xml: string,
+    private readonly xml: string | (() => string),
     private readonly windowsDump = 'mCurrentFocus=Window{123 u0 com.vivo.packageinstaller/.InstallActivity}',
     private readonly fullWindowDump = windowsDump,
     private readonly androidInstallerPath = 'package:/system/priv-app/PackageInstaller/PackageInstaller.apk',
     private readonly androidInstallerDump = '',
+    private readonly tapError?: TaskExecutionError,
   ) {}
 
   async connectionStatus() { return 'online' as const }
@@ -30,16 +35,30 @@ class DialogFakeDevice implements AndroidPreparationDevice {
     const command = args.join(' ')
     if (command === 'shell dumpsys window windows') return this.result(this.windowsDump)
     if (command === 'shell dumpsys window') return this.result(this.fullWindowDump)
-    if (command === 'exec-out uiautomator dump /dev/tty') return this.result(this.xml)
+    if (command === 'exec-out uiautomator dump /dev/tty') {
+      return this.result(typeof this.xml === 'function' ? this.xml() : this.xml)
+    }
     if (command === 'shell pm path com.vivo.packageinstaller') {
       return this.result('package:/system/priv-app/VivoPackageInstaller/base.apk')
     }
     if (command === 'shell pm path com.android.packageinstaller') {
       return this.result(this.androidInstallerPath)
     }
+    if (command === 'shell pm path com.android.permissioncontroller') {
+      return this.result('package:/system/priv-app/PermissionController/PermissionController.apk')
+    }
+    if (command === 'shell pm path com.miui.securitycenter') {
+      return this.result('package:/data/app/updated-miui-securitycenter/base.apk')
+    }
     if (command === 'shell dumpsys package com.android.packageinstaller') {
       return this.result(this.androidInstallerDump)
     }
+    if (command === 'shell dumpsys package com.miui.securitycenter') {
+      return this.result(
+        'privateFlags=[ DIRECT_BOOT_AWARE PRIVILEGED ]\npkgFlags=[ SYSTEM UPDATED_SYSTEM_APP HAS_CODE ]',
+      )
+    }
+    if (command.startsWith('shell input tap ') && this.tapError) throw this.tapError
     return this.result('')
   }
 
@@ -113,6 +132,270 @@ describe('SystemDialogController', () => {
     expect(result.kind).toBe('handled')
     expect(device.calls).toContainEqual(['shell', 'dumpsys', 'package', 'com.android.packageinstaller'])
     expect(device.calls).toContainEqual(['shell', 'input', 'tap', '852', '2464'])
+  })
+
+  it('taps the allow-one-time-install span inside the Honor X50 risk description bounds', async () => {
+    const device = new DialogFakeDevice(
+      fixture('honor-x50-safe-mode-install-sheet.xml'),
+      'mCurrentFocus=Window{5d0186f u0 com.android.packageinstaller/com.hihonor.packageinstaller.hncust.safemode.sheet.SafeModeBottomSheetActivity}',
+    )
+    const controller = new SystemDialogController(device, async () => undefined)
+    const result = await controller.inspectAndHandle({
+      manufacturer: 'HONOR',
+      packageName: 'com.morphoinc.videopostprocessor',
+      applicationLabel: 'Morpho VideoStabilizer',
+      profileIds: ['honor-safe-mode-install-sheet-v1'],
+      diagnosticsDirectory: '/tmp/not-used',
+      maxActions: 5,
+      signal: new AbortController().signal,
+      activeInstall: true,
+    })
+
+    expect(result).toMatchObject({
+      kind: 'handled',
+      dialog: {
+        profileId: 'honor-safe-mode-install-sheet-v1',
+        action: 'allow-one-time-install',
+      },
+    })
+    expect(device.calls).toContainEqual(['shell', 'input', 'tap', '958', '1993'])
+    expect(device.calls).not.toContainEqual(['shell', 'input', 'tap', '600', '1993'])
+  })
+
+  it('classifies the real Honor X50 MagicOS risk page as manual action required without tapping', async () => {
+    const diagnosticsDirectory = await mkdtemp(path.join(tmpdir(), 'honor-x50-install-block-'))
+    const screenshots: string[] = []
+    try {
+      const device = new DialogFakeDevice(
+        fixture('honor-x50-magic-os-9-package-installer-recommendations.xml'),
+        'mCurrentFocus=Window{907a4a6 u0 com.android.packageinstaller/com.android.packageinstaller.PackageInstallerActivity}',
+      )
+      const controller = new SystemDialogController(device, async (targetPath) => {
+        screenshots.push(targetPath)
+      })
+
+      const result = await controller.inspectAndHandle({
+        manufacturer: 'HONOR',
+        packageName: 'com.morphoinc.videopostprocessor',
+        applicationLabel: 'Morpho VideoStabilizer',
+        profileIds: [
+          'honor-package-installer-v1',
+          'honor-magic-os-unreviewed-app-block-v1',
+        ],
+        diagnosticsDirectory,
+        maxActions: 5,
+        signal: new AbortController().signal,
+        activeInstall: true,
+      })
+
+      expect(result).toMatchObject({
+        kind: 'manual-action-required',
+        block: {
+          profileId: 'honor-magic-os-unreviewed-app-block-v1',
+          reason: 'honor-install-authorization-required',
+        },
+      })
+      expect(device.calls.some((args) => args.slice(0, 3).join(' ') === 'shell input tap')).toBe(false)
+      const files = await readdir(diagnosticsDirectory)
+      expect(files.some((name) => name.startsWith('current-window-') && name.endsWith('.txt'))).toBe(true)
+      expect(files.some((name) => name.startsWith('install-dialog-') && name.endsWith('.xml'))).toBe(true)
+      expect(screenshots).toHaveLength(1)
+    } finally {
+      await rm(diagnosticsDirectory, { recursive: true, force: true })
+    }
+  })
+
+
+  it('handles the exact Honor X50 risk page in two independently inspected actions using fresh XML bounds', async () => {
+    const originalXml = fixture(
+      'honor-x50-magic-os-9-package-installer-recommendations-install.xml',
+    )
+    let currentXml = originalXml
+    const device = new DialogFakeDevice(
+      () => currentXml,
+      'mCurrentFocus=Window{907a4a6 u0 com.android.packageinstaller/com.android.packageinstaller.PackageInstallerActivity}',
+    )
+    const controller = new SystemDialogController(device, async () => undefined)
+    const options = {
+      manufacturer: 'HONOR',
+      deviceModel: 'ALI-AN00',
+      packageName: 'com.morphoinc.videopostprocessor',
+      applicationLabel: 'Morpho VideoStabilizer',
+      profileIds: [
+        'honor-x50-magic-os-unreviewed-app-install-v1',
+        'honor-magic-os-unreviewed-app-block-v1',
+      ],
+      diagnosticsDirectory: '/tmp/not-used',
+      maxActions: 5,
+      signal: new AbortController().signal,
+      activeInstall: true,
+    }
+
+    const checkboxResult = await controller.inspectAndHandle(options)
+    expect(checkboxResult).toMatchObject({
+      kind: 'handled',
+      dialog: {
+        profileId: 'honor-x50-magic-os-unreviewed-app-install-v1',
+        action: 'confirm-checkbox',
+      },
+    })
+    expect(device.calls).toContainEqual(['shell', 'input', 'tap', '600', '2193'])
+
+    currentXml = originalXml
+      .replace(
+        'resource-id="com.android.packageinstaller:id/checkbox" class="android.widget.CheckBox" package="com.android.packageinstaller" content-desc="" checkable="true" checked="false"',
+        'resource-id="com.android.packageinstaller:id/checkbox" class="android.widget.CheckBox" package="com.android.packageinstaller" content-desc="" checkable="true" checked="true"',
+      )
+      .replace(
+        'resource-id="android:id/button1" class="android.widget.Button" package="com.android.packageinstaller" content-desc="" checkable="false" checked="false" clickable="true" enabled="true" focusable="true" focused="false" scrollable="false" long-clickable="false" password="false" selected="false" bounds="[613,2457][1122,2574]"',
+        'resource-id="android:id/button1" class="android.widget.Button" package="com.android.packageinstaller" content-desc="" checkable="false" checked="false" clickable="true" enabled="true" focusable="true" focused="false" scrollable="false" long-clickable="false" password="false" selected="false" bounds="[700,2300][1100,2400]"',
+      )
+
+    const continueResult = await controller.inspectAndHandle(options)
+    expect(continueResult).toMatchObject({
+      kind: 'handled',
+      dialog: {
+        profileId: 'honor-x50-magic-os-unreviewed-app-install-v1',
+        action: 'continue-install',
+      },
+    })
+    expect(device.calls).toContainEqual(['shell', 'input', 'tap', '900', '2350'])
+    expect(device.calls.filter(
+      (args) => args.slice(0, 3).join(' ') === 'shell input tap',
+    )).toEqual([
+      ['shell', 'input', 'tap', '600', '2193'],
+      ['shell', 'input', 'tap', '900', '2350'],
+    ])
+  })
+
+  it('clicks the Xiaomi continue button without toggling the opt-out checkbox', async () => {
+    const device = new DialogFakeDevice(
+      fixture('xiaomi-hyperos-adb-install-confirmation.xml'),
+      'mCurrentFocus=Window{b9eb1bc u0 com.miui.securitycenter/com.miui.permcenter.install.AdbInstallActivity}',
+    )
+    const controller = new SystemDialogController(device, async () => undefined)
+    const result = await controller.inspectAndHandle({
+      manufacturer: 'Xiaomi',
+      packageName: 'com.morphoinc.videopostprocessor',
+      applicationLabel: 'Morpho VideoStabilizer',
+      profileIds: ['xiaomi-hyperos-package-installer-v1'],
+      diagnosticsDirectory: '/tmp/not-used',
+      maxActions: 5,
+      signal: new AbortController().signal,
+      activeInstall: true,
+    })
+
+    expect(result).toMatchObject({
+      kind: 'handled',
+      dialog: {
+        profileId: 'xiaomi-hyperos-package-installer-v1',
+        action: 'continue-install',
+      },
+    })
+    expect(device.calls).toContainEqual(['shell', 'input', 'tap', '311', '2187'])
+    expect(device.calls).not.toContainEqual(['shell', 'input', 'tap', '540', '2066'])
+  })
+
+  it('stops instead of tapping the same Honor safe-mode span twice when the page does not change', async () => {
+    const diagnosticsDirectory = await mkdtemp(path.join(tmpdir(), 'honor-safe-mode-dialog-'))
+    try {
+      const device = new DialogFakeDevice(
+        fixture('honor-x50-safe-mode-install-sheet.xml'),
+        'mCurrentFocus=Window{5d0186f u0 com.android.packageinstaller/com.hihonor.packageinstaller.hncust.safemode.sheet.SafeModeBottomSheetActivity}',
+      )
+      const controller = new SystemDialogController(device, async () => undefined)
+      const options = {
+        manufacturer: 'HONOR',
+        packageName: 'com.morphoinc.videopostprocessor',
+        applicationLabel: 'Morpho VideoStabilizer',
+        profileIds: ['honor-safe-mode-install-sheet-v1'],
+        diagnosticsDirectory,
+        maxActions: 5,
+        signal: new AbortController().signal,
+        activeInstall: true,
+      }
+
+      await controller.inspectAndHandle(options)
+      await expect(controller.inspectAndHandle(options)).rejects.toMatchObject({
+        code: 'INSTALL_DIALOG_UNRECOGNIZED',
+      })
+      expect(device.calls.filter(
+        (args) => args.slice(0, 3).join(' ') === 'shell input tap',
+      )).toEqual([['shell', 'input', 'tap', '958', '1993']])
+    } finally {
+      await rm(diagnosticsDirectory, { recursive: true, force: true })
+    }
+  })
+
+  it('saves diagnostics and reports Xiaomi input automation guidance when a matched tap is denied', async () => {
+    const diagnosticsDirectory = await mkdtemp(path.join(tmpdir(), 'xiaomi-input-denied-'))
+    const screenshots: string[] = []
+    try {
+      const device = new DialogFakeDevice(
+        fixture('xiaomi-hyperos-adb-install-confirmation.xml'),
+        'mCurrentFocus=Window{b9eb1bc u0 com.miui.securitycenter/com.miui.permcenter.install.AdbInstallActivity}',
+        undefined,
+        undefined,
+        undefined,
+        new TaskExecutionError(
+          "Exception occurred while executing 'tap': java.lang.SecurityException: Injecting input events requires the caller to have the INJECT_EVENTS permission at com.android.server.input.InputManagerService.injectInputEventToTarget(InputManagerService.java:1103)",
+          'INSTALL_DIALOG_UNRECOGNIZED',
+        ),
+      )
+      const controller = new SystemDialogController(device, async (targetPath) => {
+        screenshots.push(targetPath)
+      })
+
+      await expect(controller.inspectAndHandle({
+        manufacturer: 'Xiaomi',
+        packageName: 'com.morphoinc.videopostprocessor',
+        applicationLabel: 'Morpho VideoStabilizer',
+        profileIds: ['xiaomi-hyperos-package-installer-v1'],
+        diagnosticsDirectory,
+        maxActions: 4,
+        signal: new AbortController().signal,
+      })).rejects.toMatchObject({
+        code: 'DEVICE_INPUT_AUTOMATION_DENIED',
+        message: expect.stringMatching(/小米\/HyperOS 拒绝 ADB 控制触摸事件.*USB 调试（安全设置）.*网络 ADB/),
+      })
+
+      const files = await readdir(diagnosticsDirectory)
+      expect(files.some((name) => name.startsWith('current-window-') && name.endsWith('.txt'))).toBe(true)
+      expect(files.some((name) => name.startsWith('install-dialog-') && name.endsWith('.xml'))).toBe(true)
+      expect(screenshots).toHaveLength(1)
+      expect(screenshots[0]).toMatch(/install-dialog-.*\.png$/)
+      expect(device.calls.filter(
+        (args) => args.slice(0, 3).join(' ') === 'shell input tap',
+      )).toHaveLength(1)
+    } finally {
+      await rm(diagnosticsDirectory, { recursive: true, force: true })
+    }
+  })
+
+  it('preserves ordinary ADB tap failures without reclassifying them as input permission errors', async () => {
+    const tapError = new TaskExecutionError('网络 ADB 连接已断开', 'DEVICE_OFFLINE')
+    const device = new DialogFakeDevice(
+      fixture('android-camera-permission.xml'),
+      'mCurrentFocus=Window{123 u0 com.android.permissioncontroller/.permission.ui.GrantPermissionsActivity}',
+      undefined,
+      undefined,
+      undefined,
+      tapError,
+    )
+    const controller = new SystemDialogController(device, async () => undefined)
+
+    await expect(controller.inspectAndHandle({
+      manufacturer: 'Xiaomi',
+      packageName: 'com.morphoinc.videopostprocessor',
+      applicationLabel: 'Morpho VideoStabilizer',
+      profileIds: ['android-runtime-permission-v1'],
+      diagnosticsDirectory: '/tmp/not-used',
+      maxActions: 4,
+      signal: new AbortController().signal,
+    })).rejects.toMatchObject({
+      code: 'DEVICE_OFFLINE',
+      message: '网络 ADB 连接已断开',
+    })
   })
 
   it('does not click a generic unrelated continue dialog', async () => {

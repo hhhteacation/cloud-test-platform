@@ -16,6 +16,7 @@ const fixture = (name: string) => readFileSync(
 class PreparationFakeDevice implements AndroidPreparationDevice {
   readonly calls: string[][] = []
   private installedChecks = 0
+  protected awake = true
 
   async connectionStatus() { return 'online' as const }
 
@@ -27,6 +28,16 @@ class PreparationFakeDevice implements AndroidPreparationDevice {
   async run(args: string[]): Promise<ProcessResult> {
     this.calls.push(args)
     const command = args.join(' ')
+    if (command === 'shell dumpsys power') {
+      return this.result(this.awake
+        ? 'mWakefulness=Awake\nmInteractive=true'
+        : 'mWakefulness=Asleep\nmInteractive=false')
+    }
+    if (command === 'shell input keyevent KEYCODE_WAKEUP'
+      || command === 'shell cmd power wakeup 0') {
+      this.awake = true
+      return this.result('')
+    }
     if (command === 'shell dumpsys window policy') return this.result('mKeyguardShowing=false')
     if (command.startsWith('shell dumpsys package ')) {
       return this.result(`
@@ -40,6 +51,24 @@ class PreparationFakeDevice implements AndroidPreparationDevice {
 
   private result(stdout: string): ProcessResult {
     return { code: 0, stdout, stderr: '' }
+  }
+}
+
+class XiaomiInputDeniedPreparationDevice extends PreparationFakeDevice {
+  constructor() {
+    super()
+    this.awake = false
+  }
+
+  override async run(args: string[]): Promise<ProcessResult> {
+    if (args.join(' ') === 'shell input keyevent KEYCODE_WAKEUP') {
+      this.calls.push(args)
+      throw new TaskExecutionError(
+        "Exception occurred while executing 'keyevent': java.lang.SecurityException: Injecting input events requires the caller to have the INJECT_EVENTS permission",
+        'DEVICE_LOCKED',
+      )
+    }
+    return super.run(args)
   }
 }
 
@@ -60,6 +89,7 @@ class OplusPermissionFallbackDevice implements AndroidPreparationDevice {
   async run(args: string[]): Promise<ProcessResult> {
     this.calls.push(args)
     const command = args.join(' ')
+    if (command === 'shell dumpsys power') return this.result('mWakefulness=Awake\nmInteractive=true')
     if (command === 'shell dumpsys window policy') return this.result('mKeyguardShowing=false')
     if (command.startsWith('shell pm grant ')) {
       throw new TaskExecutionError(
@@ -114,6 +144,88 @@ class OplusPermissionFallbackDevice implements AndroidPreparationDevice {
 }
 
 describe('DefaultAndroidAppPreparer', () => {
+  it('falls back to PowerManager and continues installation when Xiaomi wake input is denied', async () => {
+    const protocol = findApkExecutionProtocol('com.morphoinc.videopostprocessor')!
+    const device = new XiaomiInputDeniedPreparationDevice()
+    const preparer = new DefaultAndroidAppPreparer({
+      createDevice: () => device,
+      captureScreenshot: async () => undefined,
+    })
+
+    await expect(preparer.prepareApplication({
+      deviceSerial: 'network-endpoint',
+      deviceManufacturer: 'Xiaomi',
+      deviceModel: 'Xiaomi device',
+      apkPath: '/tmp/morpho.apk',
+      protocol,
+      diagnosticsDirectory: '/tmp/not-used',
+      signal: new AbortController().signal,
+      onEvent: () => undefined,
+    })).resolves.toMatchObject({ cleanInstalled: true })
+
+    expect(device.calls).toContainEqual(['shell', 'input', 'keyevent', 'KEYCODE_WAKEUP'])
+    expect(device.calls).toContainEqual(['shell', 'cmd', 'power', 'wakeup', '0'])
+    expect(device.calls).toContainEqual(['install', '/tmp/morpho.apk'])
+  })
+
+  it('keeps the PowerManager fallback for Xiaomi protocols without the HyperOS installer profile', async () => {
+    const base = findApkExecutionProtocol('com.morphoinc.videopostprocessor')!
+    const protocol: ApkExecutionProtocol = {
+      ...base,
+      install: {
+        ...base.install,
+        dialogAutomation: {
+          ...base.install.dialogAutomation!,
+          profileIds: base.install.dialogAutomation!.profileIds.filter(
+            (profileId) => profileId !== 'xiaomi-hyperos-package-installer-v1',
+          ),
+        },
+      },
+    }
+    const device = new XiaomiInputDeniedPreparationDevice()
+    const preparer = new DefaultAndroidAppPreparer({
+      createDevice: () => device,
+      captureScreenshot: async () => undefined,
+    })
+
+    await expect(preparer.prepareApplication({
+      deviceSerial: 'xiaomi-without-input-automation',
+      deviceManufacturer: 'Xiaomi',
+      deviceModel: '2410DPN6CC',
+      apkPath: '/tmp/morpho.apk',
+      protocol,
+      diagnosticsDirectory: '/tmp/not-used',
+      signal: new AbortController().signal,
+      onEvent: () => undefined,
+    })).resolves.toMatchObject({ cleanInstalled: true })
+
+    expect(device.calls).toContainEqual(['shell', 'cmd', 'power', 'wakeup', '0'])
+    expect(device.calls).toContainEqual(['install', '/tmp/morpho.apk'])
+  })
+
+  it('keeps the PowerManager fallback for non-Xiaomi devices even when the profile is enabled', async () => {
+    const protocol = findApkExecutionProtocol('com.morphoinc.videopostprocessor')!
+    const device = new XiaomiInputDeniedPreparationDevice()
+    const preparer = new DefaultAndroidAppPreparer({
+      createDevice: () => device,
+      captureScreenshot: async () => undefined,
+    })
+
+    await expect(preparer.prepareApplication({
+      deviceSerial: 'honor-device',
+      deviceManufacturer: 'HONOR',
+      deviceModel: 'X50',
+      apkPath: '/tmp/morpho.apk',
+      protocol,
+      diagnosticsDirectory: '/tmp/not-used',
+      signal: new AbortController().signal,
+      onEvent: () => undefined,
+    })).resolves.toMatchObject({ cleanInstalled: true })
+
+    expect(device.calls).toContainEqual(['shell', 'cmd', 'power', 'wakeup', '0'])
+    expect(device.calls).toContainEqual(['install', '/tmp/morpho.apk'])
+  })
+
   it('installs before granting permissions and launches only after verification', async () => {
     const base = findApkExecutionProtocol('com.morphoinc.videopostprocessor')!
     const protocol: ApkExecutionProtocol = {
@@ -164,6 +276,10 @@ describe('DefaultAndroidAppPreparer', () => {
         'android.permission.RECORD_AUDIO',
       ],
       handledDialogs: [],
+      timings: {
+        installMs: expect.any(Number),
+        permissionMs: expect.any(Number),
+      },
     })
     expect(events).toContain('相机权限验证通过')
     expect(events).toContain('录音权限验证通过')

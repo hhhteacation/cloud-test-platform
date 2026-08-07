@@ -16,6 +16,7 @@ describe('APK execution protocol registry', () => {
     expect(protocol?.id).toBe('platform-carrier-v1')
     expect(protocol?.launch.supportsTaskId).toBe(true)
     expect(protocol?.result.apkGeneratesResultJson).toBe(true)
+    expect(protocol?.install.dialogAutomation).toBeUndefined()
   })
 
   it('recognizes Morpho VideoPostProcessor and exposes its real capabilities', () => {
@@ -33,10 +34,39 @@ describe('APK execution protocol registry', () => {
     ])
     expect(protocol?.install.dialogAutomation).toMatchObject({
       mode: 'strict-whitelist',
-      maxActions: 4,
+      maxActions: 5,
       unrecognizedGraceMs: 20_000,
     })
     expect(protocol?.install.dialogAutomation?.profileIds).toContain('oplus-package-installer-v1')
+    expect(protocol?.install.dialogAutomation?.profileIds).toContain(
+      'honor-safe-mode-install-sheet-v1',
+    )
+    expect(protocol?.install.dialogAutomation?.profileIds).toContain(
+      'honor-magic-os-unreviewed-app-block-v1',
+    )
+    expect(protocol?.install.dialogAutomation?.profileIds).toContain(
+      'honor-x50-magic-os-unreviewed-app-install-v1',
+    )
+    expect(protocol?.install.dialogAutomation?.profileIds).toContain(
+      'honor-x50-unknown-source-warning-v1',
+    )
+    expect(protocol?.install.dialogAutomation?.profileIds).toContain(
+      'honor-x50-icp-notice-v1',
+    )
+    expect(protocol?.install.dialogAutomation?.profileIds).toContain(
+      'xiaomi-hyperos-package-installer-v1',
+    )
+    expect(protocol?.progress.logTags).toEqual([
+      'MORPHO',
+      'MorphoVideoPProc/Controller',
+      'MorphoVideoPProc/Decoder',
+      'MorphoVideoPProc/Encoder',
+      'MorphoVideoPProc/Interface',
+      'MorphoVideoPProc/Parser',
+      'MorphoVideoPProc/Sensor',
+      'MorphoVideoPProc/Stabilizer',
+      'MorphoVideoPProc/WDR',
+    ])
   })
 
   it('does not pretend an unknown APK has an executable protocol', () => {
@@ -99,8 +129,13 @@ describe('APK execution protocol registry', () => {
   })
 
   it('maps Morpho log lines to progress and failures', () => {
-    expect(parseMorphoLogLine('I/MORPHO: Starting batch processing for path: /input')).toMatchObject({ progress: 48 })
-    expect(parseMorphoLogLine('I/MORPHO: Processing file 1/1: input.mp4')).toMatchObject({ progress: 58 })
+    expect(parseMorphoLogLine('I/MORPHO: Starting batch processing for path: /input')).toMatchObject({
+      progress: 48,
+      businessStarted: true,
+    })
+    expect(parseMorphoLogLine(
+      'D MorphoVideoPProc/Interface: Processing file 1/1: input.mp4',
+    )).toMatchObject({ progress: 58, businessStarted: true })
     expect(parseMorphoLogLine(
       'I/MORPHO: Output: /storage/emulated/0/Android/data/com.morphoinc.videopostprocessor/files/VideoStabilizerDataPack/stabilized/vivo_V2324A_test_stabilized.mp4',
     )).toMatchObject({

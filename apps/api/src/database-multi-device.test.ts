@@ -121,9 +121,17 @@ describe('PlatformDatabase 多设备任务聚合', () => {
     const task = createTwoDeviceTask()
     const [runA] = database.listQueuedDeviceRunJobs(task.id)
 
-    expect(database.failDeviceRun(runA, 'WORKER_UNEXPECTED_ERROR', 'unexpected')).toBe(true)
+    expect(database.failDeviceRun(
+      runA,
+      'INSTALL_USER_ACTION_REQUIRED',
+      '检测到荣耀安全风险安装页面，需要人工确认安装授权；平台未自动点击任何含义不明确的按钮。',
+    )).toBe(true)
     const updated = database.getTask(task.id)!
-    expect(updated.runs['device-a']).toMatchObject({ status: 'failed', failureCode: 'WORKER_UNEXPECTED_ERROR' })
+    expect(updated.runs['device-a']).toMatchObject({
+      status: 'failed',
+      failureCode: 'INSTALL_USER_ACTION_REQUIRED',
+      failureMessage: expect.stringContaining('需要人工确认安装授权'),
+    })
     expect(updated.runs['device-b']).toMatchObject({ status: 'queued' })
     expect(updated.status).toBe('running')
   })

@@ -1,4 +1,4 @@
-import type { DeviceDiscoveryCandidate, DevicePlatform } from '../types.js'
+import type { DeviceDiscoveryCandidate, DevicePlatform, DeviceConnectionKind } from '../types.js'
 
 /**
  * Platform-specific discovery seam. Android uses ADB today; iOS and HarmonyOS
@@ -7,4 +7,7 @@ import type { DeviceDiscoveryCandidate, DevicePlatform } from '../types.js'
 export interface DeviceDiscoveryProvider {
   readonly platform: DevicePlatform
   discover(): Promise<DeviceDiscoveryCandidate[]>
+  discoverNetwork?(): Promise<DeviceDiscoveryCandidate[]>
+  connectNetwork?(host: string, port: number): Promise<DeviceDiscoveryCandidate>
+  disconnect?(serial: string): Promise<void>
 }

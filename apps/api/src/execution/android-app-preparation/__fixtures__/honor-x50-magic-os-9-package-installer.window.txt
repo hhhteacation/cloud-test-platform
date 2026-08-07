@@ -1,0 +1,3 @@
+WINDOW MANAGER WINDOWS (captured from HONOR ALI-AN00 / MagicOS 9)
+  mCurrentFocus=Window{REDACTED u0 com.android.packageinstaller/com.android.packageinstaller.PackageInstallerActivity}
+  mFocusedApp=ActivityRecord{REDACTED u0 com.android.packageinstaller/.PackageInstallerActivity tREDACTED mVisible=true}

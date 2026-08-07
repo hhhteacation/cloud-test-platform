@@ -37,6 +37,10 @@ export interface AndroidAppPreparationReceipt {
   cleanInstalled: boolean
   grantedPermissions: string[]
   handledDialogs: HandledDialog[]
+  timings: {
+    installMs: number
+    permissionMs: number
+  }
 }
 
 export interface AndroidAppPreparer {

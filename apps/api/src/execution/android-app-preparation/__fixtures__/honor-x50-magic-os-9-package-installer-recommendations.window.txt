@@ -1,0 +1,8 @@
+mCurrentFocus=Window{8aa8a23 u0 com.android.packageinstaller/com.android.packageinstaller.PackageInstallerActivity}
+mFocusedApp=ActivityRecord{aff09b7 u0 com.android.packageinstaller/.PackageInstallerActivity t138 mVisible=true mOccludesParent=true mode=fullscreen boundsRect(0, 0 - 1200, 2652)}
+focusedWindowPackage=com.android.packageinstaller
+focusedWindowComponent=com.android.packageinstaller/com.android.packageinstaller.PackageInstallerActivity
+manufacturer=HONOR
+model=ALI-AN00
+android=15
+magicOS=9.0.0.152

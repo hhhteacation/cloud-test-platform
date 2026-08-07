@@ -52,4 +52,15 @@ describe('视频文件 HTTP Range 响应', () => {
     expect(response.statusCode).toBe(416)
     expect(response.headers['content-range']).toBe('bytes */10')
   })
+  it('正确处理 suffix range', async () => {
+    const response = await app.inject({
+      method: 'GET',
+      url: '/video',
+      headers: { range: 'bytes=-4' },
+    })
+    expect(response.statusCode).toBe(206)
+    expect(response.headers['content-range']).toBe('bytes 6-9/10')
+    expect(response.body).toBe('6789')
+  })
+
 })

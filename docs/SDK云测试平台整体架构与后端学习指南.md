@@ -274,35 +274,30 @@ web/src/platform/client.ts
 规则是：
 
 ```text
-配置 VITE_API_BASE_URL=/api
+默认（不需要配置 VITE_API_BASE_URL）
 → 使用 HttpTestPlatformClient
-→ 访问真实 Fastify 后端
+→ 通过 /api 访问真实 Fastify 后端
 
-没有配置
+只有显式配置 VITE_PLATFORM_MODE=mock
 → 使用 MockTestPlatformClient
 → 数据保存在浏览器 localStorage
+→ 不会操作数据库和手机
 ```
 
-所以启动完整真实平台要使用：
+所以启动完整真实平台使用：
 
 ```bash
-npm run dev
+pnpm dev
 ```
 
-或者：
+也可以分别启动：
 
 ```bash
-npm run dev:api
-npm run dev:web:real
+pnpm dev:api
+pnpm dev:web
 ```
 
-如果只运行：
-
-```bash
-npm run dev:web
-```
-
-默认可能进入 Mock 模式，不会真正操作数据库和手机。
+`pnpm dev:web:mock` 只用于纯前端演示，不能用于真机测试。
 
 ---
 

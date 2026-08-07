@@ -2,14 +2,30 @@ import type { TestPlatformClient } from '../types'
 import { HttpTestPlatformClient } from './httpClient'
 import { MockTestPlatformClient } from './mockClient'
 
-const configuredApiBase = import.meta.env.VITE_API_BASE_URL?.trim()
+export type PlatformRuntime =
+  | { mode: 'real'; apiBaseUrl: string }
+  | { mode: 'mock' }
+
+function normalizedApiBase(value: string | undefined) {
+  const configured = value?.trim() || '/api'
+  const withoutTrailingSlash = configured.replace(/\/+$/, '')
+  return withoutTrailingSlash || '/api'
+}
 
 /**
- * 配置 VITE_API_BASE_URL（本地通常为 /api）时使用真实后端；
- * 不配置时使用浏览器 localStorage Mock，便于只看前端页面。
+ * Phase 0 默认必须连接真实后端，避免遗漏环境变量时静默进入 Mock、让用户误以为真机平台可用。
+ * Mock 只保留给前端演示和专项测试，并且必须显式设置 VITE_PLATFORM_MODE=mock。
  */
-export const platformClient: TestPlatformClient = configuredApiBase
-  ? new HttpTestPlatformClient(configuredApiBase.replace(/\/$/, ''))
-  : new MockTestPlatformClient()
+export function resolvePlatformRuntime(env: Record<string, string | boolean | undefined>): PlatformRuntime {
+  const requestedMode = String(env.VITE_PLATFORM_MODE ?? '').trim().toLowerCase()
+  if (requestedMode === 'mock') return { mode: 'mock' }
+  return { mode: 'real', apiBaseUrl: normalizedApiBase(String(env.VITE_API_BASE_URL ?? '')) }
+}
+
+export const platformRuntime = resolvePlatformRuntime(import.meta.env)
+
+export const platformClient: TestPlatformClient = platformRuntime.mode === 'mock'
+  ? new MockTestPlatformClient()
+  : new HttpTestPlatformClient(platformRuntime.apiBaseUrl)
 
 export const isRealPlatform = platformClient.mode === 'real'

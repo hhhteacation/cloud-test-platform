@@ -12,9 +12,12 @@ import { getAverageProgress, getTaskConclusion } from '../features/tasks/taskRul
 import { clone, readTasks, TASKS_STORAGE_KEY, writeTasks } from './mockStorage'
 import { MOCK_TIMING } from './mockTiming'
 
-function createQueuedRun(deviceId: string): DeviceRunResult {
+function createQueuedRun(input: MockCreateTaskInput['executions'][number]): DeviceRunResult {
   return {
-    deviceId,
+    deviceId: input.deviceId,
+    endpointId: input.endpointId,
+    connectionKind: input.connectionKind,
+    adbSerial: input.adbSerial,
     status: 'queued',
     progress: 0,
     checks: [],
@@ -33,12 +36,13 @@ function createTask(input: MockCreateTaskInput): TestTask {
     apk: input.apk,
     asset: input.asset,
     deviceIds: input.deviceIds,
+    connectionMode: input.connectionMode,
     status: 'queued',
     progress: 0,
     createdAt: new Date().toISOString(),
     capabilities: getTaskCapabilities('queued'),
     runs: Object.fromEntries(
-      input.deviceIds.map((deviceId) => [deviceId, createQueuedRun(deviceId)]),
+      input.executions.map((execution) => [execution.deviceId, createQueuedRun(execution)]),
     ),
   }
 }

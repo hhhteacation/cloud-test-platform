@@ -1,7 +1,29 @@
 import { useCallback, useEffect, useState } from 'react'
 
-import type { DeviceProfile, TestTask } from '../types'
+import type { DeviceProfile, TestPlatformClient, TestTask } from '../types'
 import { platformClient } from './client'
+
+
+export function createDeviceRefreshCoordinator(
+  client: Pick<TestPlatformClient, 'refreshDevices'>,
+  replaceDevices: (devices: DeviceProfile[]) => void,
+) {
+  let inFlight: Promise<DeviceProfile[]> | undefined
+
+  return () => {
+    if (inFlight) return inFlight
+    const refresh = client.refreshDevices().then((devices) => {
+      replaceDevices(devices)
+      return devices
+    })
+    inFlight = refresh
+    const clear = () => {
+      if (inFlight === refresh) inFlight = undefined
+    }
+    void refresh.then(clear, clear)
+    return refresh
+  }
+}
 
 export function usePlatformTasks(pollActive = false) {
   const [tasks, setTasks] = useState<TestTask[]>([])
@@ -29,7 +51,7 @@ export function usePlatformTasks(pollActive = false) {
   return { tasks, loading, error, reload }
 }
 
-export function usePlatformDevices() {
+export function usePlatformDevices(pollActive = false) {
   const [devices, setDevices] = useState<DeviceProfile[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string>()
@@ -45,9 +67,18 @@ export function usePlatformDevices() {
     }
   }, [])
 
+  const replaceDevices = useCallback((nextDevices: DeviceProfile[]) => {
+    setDevices(nextDevices)
+    setError(undefined)
+    setLoading(false)
+  }, [])
+
   useEffect(() => {
     void reload()
-  }, [reload])
+    if (!pollActive) return
+    const timer = window.setInterval(() => void reload(), 5000)
+    return () => window.clearInterval(timer)
+  }, [pollActive, reload])
 
-  return { devices, loading, error, reload }
+  return { devices, loading, error, reload, replaceDevices }
 }

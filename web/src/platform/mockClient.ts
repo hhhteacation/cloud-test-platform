@@ -7,6 +7,7 @@ import type {
   TestPlatformClient,
   TaskDeletionReceipt,
   VideoAsset,
+  DeviceEndpoint,
 } from '../types'
 import { DEVICES } from '../features/tasks/taskDefinitions'
 
@@ -19,11 +20,37 @@ export class MockTestPlatformClient implements TestPlatformClient {
   private readonly artifacts = new Map<string, Artifact>()
 
   async listDevices() {
-    return DEVICES.map((device) => ({
-      ...device,
-      connectionStatus:
-        device.id === 'honor-magic-v3' ? ('online' as const) : ('unknown' as const),
-    }))
+    return DEVICES.map((device, index) => {
+      if (device.platform !== 'android') return { ...device, connectionStatus: 'unknown' as const }
+      const usbStatus = index === 0 || index === 5 ? 'online' as const : index === 2 ? 'unauthorized' as const : 'offline' as const
+      const networkStatus = index === 0 || index === 1 ? 'online' as const : index === 3 ? 'offline' as const : undefined
+      const usb = {
+        id: `mock-usb-${device.id}`, deviceId: device.id, kind: 'usb' as const,
+        adbSerial: `MOCK-${device.id}`, status: usbStatus,
+      }
+      const network = networkStatus ? {
+        id: `mock-network-${device.id}`, deviceId: device.id, kind: 'network' as const,
+        adbSerial: `192.0.2.${index + 10}:5555`, host: `192.0.2.${index + 10}`, port: 5555,
+        status: networkStatus,
+        lastError: networkStatus === 'offline' ? 'Mock：设备当前不在测试网络中' : undefined,
+      } : undefined
+      const online = usbStatus === 'online' || networkStatus === 'online'
+      return {
+        ...device,
+        serial: usb.adbSerial,
+        endpoints: { usb, ...(network ? { network } : {}) },
+        connectionStatus: online ? 'online' as const : usbStatus,
+        overallConnectionStatus: online ? 'online' as const : usbStatus,
+        selectable: online,
+        unavailableReason: online ? undefined : 'Mock：当前没有在线连接',
+        queueStatus: index === 1 ? 'queued' as const : index === 5 ? 'running' as const : 'idle' as const,
+        lastSeenAt: online ? new Date(Date.now() - index * 60_000).toISOString() : undefined,
+      }
+    })
+  }
+
+  async refreshDevices() {
+    return this.listDevices()
   }
 
   async discoverDevices() {
@@ -42,6 +69,27 @@ export class MockTestPlatformClient implements TestPlatformClient {
         connectionStatus: device.connectionStatus ?? ('unknown' as const),
         registeredDeviceId: device.id,
       }))
+  }
+
+
+  async discoverNetworkDevices() {
+    return []
+  }
+
+  async connectNetworkDevice(_deviceId: string, _host: string, _port: number): Promise<DeviceEndpoint> {
+    throw new PlatformApiError('Mock 模式不连接真实 ADB，请使用真实后端模式管理联网设备', 'MOCK_NETWORK_UNAVAILABLE', 409)
+  }
+
+  async disconnectNetworkDevice(): Promise<DeviceEndpoint> {
+    throw new PlatformApiError('Mock 模式不连接真实 ADB', 'MOCK_NETWORK_UNAVAILABLE', 409)
+  }
+
+  async refreshNetworkDevice(): Promise<DeviceEndpoint> {
+    throw new PlatformApiError('Mock 模式不连接真实 ADB', 'MOCK_NETWORK_UNAVAILABLE', 409)
+  }
+
+  async removeNetworkDevice(): Promise<void> {
+    throw new PlatformApiError('Mock 模式不连接真实 ADB', 'MOCK_NETWORK_UNAVAILABLE', 409)
   }
 
   async registerDevice(): Promise<import('../types').DeviceProfile> {
@@ -70,12 +118,35 @@ export class MockTestPlatformClient implements TestPlatformClient {
     const apk = this.artifacts.get(input.apkArtifactId) as ApkAsset | undefined
     const video = this.artifacts.get(input.videoArtifactId) as VideoAsset | undefined
     if (!apk || !video?.previewUrl) throw new Error('Mock 上传文件记录不存在')
+    const connectionMode = input.connectionMode ?? 'auto'
+    const devices = await this.listDevices()
+    const executions = input.deviceIds.map((deviceId) => {
+      const device = devices.find((candidate) => candidate.id === deviceId)
+      const usb = device?.endpoints?.usb
+      const network = device?.endpoints?.network
+      const endpoint = connectionMode === 'usb'
+        ? usb
+        : connectionMode === 'network'
+          ? network
+          : usb?.status === 'online' ? usb : network
+      if (!endpoint || endpoint.status !== 'online') {
+        throw new PlatformApiError(`${device?.name ?? deviceId} 当前连接模式不可用`, 'DEVICE_NOT_ONLINE', 409)
+      }
+      return {
+        deviceId,
+        endpointId: endpoint.id,
+        connectionKind: endpoint.kind,
+        adbSerial: endpoint.adbSerial,
+      }
+    })
 
     return this.runner.createTask({
       name: input.name,
       apk,
       asset: video,
       deviceIds: input.deviceIds,
+      connectionMode,
+      executions,
     })
   }
 

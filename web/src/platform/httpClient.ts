@@ -3,6 +3,7 @@ import type {
   ArtifactKind,
   CreateTaskInput,
   DeviceProfile,
+  DeviceEndpoint,
   DeviceDiscoveryCandidate,
   TaskUpdateListener,
   TestPlatformClient,
@@ -31,8 +32,34 @@ export class HttpTestPlatformClient implements TestPlatformClient {
     return this.request<DeviceProfile[]>('/devices')
   }
 
+  refreshDevices() {
+    return this.request<DeviceProfile[]>('/devices/refresh', { method: 'POST' })
+  }
+
   discoverDevices() {
     return this.request<DeviceDiscoveryCandidate[]>('/devices/discover', { method: 'POST' })
+  }
+
+  discoverNetworkDevices() {
+    return this.request<DeviceDiscoveryCandidate[]>('/devices/network/discover', { method: 'POST' })
+  }
+
+  connectNetworkDevice(deviceId: string, host: string, port: number) {
+    return this.request<DeviceEndpoint>(`/devices/${deviceId}/endpoints/network`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ host, port }),
+    })
+  }
+
+  disconnectNetworkDevice(deviceId: string, endpointId: string) {
+    return this.request<DeviceEndpoint>(`/devices/${deviceId}/endpoints/network/${endpointId}/disconnect`, { method: 'POST' })
+  }
+
+  refreshNetworkDevice(deviceId: string, endpointId: string) {
+    return this.request<DeviceEndpoint>(`/devices/${deviceId}/endpoints/network/${endpointId}/refresh`, { method: 'POST' })
+  }
+
+  removeNetworkDevice(deviceId: string, endpointId: string) {
+    return this.request<void>(`/devices/${deviceId}/endpoints/network/${endpointId}`, { method: 'DELETE' })
   }
 
   registerDevice(serial: string) {
@@ -136,6 +163,7 @@ export class HttpTestPlatformClient implements TestPlatformClient {
       )
     }
 
+    if (response.status === 204) return undefined as T
     const data = (await response.json()) as T
     return this.normalizeUrls(data)
   }

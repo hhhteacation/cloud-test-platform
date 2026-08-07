@@ -15,3 +15,20 @@ data/
 apps/api/dist/
 .env
 .env.local
+
+# Uploaded test assets and runtime databases must not enter Git.
+*.apk
+*.aab
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.mp4
+*.mov
+*.mkv
+*.pem
+*.key
+*.p12
+
+# These two tiny demo assets are intentionally versioned with the sample app.
+!web/public/input.mp4
+!android/app/src/main/assets/input.mp4

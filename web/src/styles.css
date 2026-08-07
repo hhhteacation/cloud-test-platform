@@ -1,153 +1,426 @@
 :root {
-  background: #f5f7fa;
-  color: #1f2937;
+  background: #f3f1ea;
+  color: #151a16;
   font-synthesis: none;
+  --app-canvas: #f3f1ea;
+  --app-surface: #fbfaf6;
+  --app-ink: #151a16;
+  --app-muted: #687169;
+  --app-line: #d8d7cf;
+  --app-green: #19734b;
+  --app-green-dark: #105739;
+  --app-console: #111713;
+  --app-signal: #8dff75;
 }
 
 * {
   box-sizing: border-box;
 }
 
+html {
+  min-width: 320px;
+  background: var(--app-canvas);
+}
+
 body {
-  min-width: 1120px;
+  min-width: 0;
   margin: 0;
-  background: #f5f7fa;
+  overflow-x: hidden;
+  background: var(--app-canvas);
+  color: var(--app-ink);
+}
+
+button,
+a,
+[role='button'],
+.ant-menu-item {
+  -webkit-tap-highlight-color: transparent;
+}
+
+:where(button, a, input, textarea, select, [role='button'], [tabindex]):focus-visible {
+  outline: 3px solid rgba(25, 115, 75, 0.34);
+  outline-offset: 2px;
 }
 
 .app-shell {
   min-height: 100vh;
+  background: var(--app-canvas);
+}
+
+.app-shell > .ant-layout,
+.app-shell .ant-layout-content {
+  min-width: 0;
+  background: var(--app-canvas);
 }
 
 .app-sider {
   position: relative;
-  border-right: 1px solid #edf0f5;
-  box-shadow: 2px 0 8px rgba(15, 23, 42, 0.03);
+  z-index: 3;
+  border-right: 1px solid #d5d6cf;
+  background: #eeede7 !important;
+  box-shadow: none;
+}
+
+.app-sider .ant-layout-sider-children {
+  display: flex;
+  min-height: 100vh;
+  flex-direction: column;
 }
 
 .brand {
   display: flex;
   align-items: center;
-  height: 68px;
-  gap: 11px;
-  padding: 0 22px;
-  color: #0f172a;
-  font-size: 18px;
-  font-weight: 700;
+  height: 70px;
+  flex: none;
+  gap: 12px;
+  padding: 0 20px;
+  color: var(--app-ink);
+  font-size: 16px;
+  font-weight: 760;
+  letter-spacing: -0.02em;
+}
+
+.brand--compact {
+  display: none;
+  height: auto;
+  padding: 0;
+  font-size: 14px;
 }
 
 .brand-mark {
+  position: relative;
   display: grid;
-  place-items: center;
-  width: 30px;
-  height: 30px;
-  border-radius: 9px;
-  background: linear-gradient(145deg, #2f88ff, #0958d9);
-  color: white;
-  font-size: 19px;
+  width: 31px;
+  height: 31px;
+  flex: none;
+  align-content: center;
+  gap: 4px;
+  padding: 7px 6px;
+  border: 1px solid #1e2922;
+  background: var(--app-console);
+}
+
+.brand-mark span {
+  display: block;
+  height: 2px;
+  background: #738078;
+}
+
+.brand-mark span:nth-child(1) {
+  width: 56%;
+}
+
+.brand-mark span:nth-child(2) {
+  width: 100%;
+  background: var(--app-signal);
+}
+
+.brand-mark span:nth-child(3) {
+  width: 72%;
+  justify-self: end;
 }
 
 .project-switcher {
   display: flex;
+  width: calc(100% - 28px);
+  min-height: 48px;
   align-items: center;
-  gap: 8px;
-  margin: 5px 14px 18px;
-  padding: 11px 12px;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  color: #4b5563;
+  gap: 10px;
+  margin: 4px 14px 18px;
+  padding: 9px 11px;
+  border: 1px solid #d1d3cc;
+  border-radius: 3px;
+  background: #f7f6f1;
+  color: #434d46;
+  font: inherit;
   font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.project-switcher:hover {
+  border-color: #8aa795;
+  color: var(--app-green);
+  background: #fbfaf6;
 }
 
 .project-switcher .chevron {
   margin-left: auto;
+  color: #768079;
 }
 
-.ant-menu {
+.app-sider .ant-menu,
+.mobile-nav-content .ant-menu {
   border-inline-end: 0 !important;
+  background: transparent !important;
 }
 
-.ant-menu-item {
+.app-sider .ant-menu-item,
+.mobile-nav-content .ant-menu-item {
   width: calc(100% - 20px) !important;
-  margin-inline: 10px !important;
+  height: 44px;
+  margin: 2px 10px !important;
+  border-radius: 2px;
+  color: #3f4a43;
+  font-weight: 560;
 }
 
-.ant-menu-item-selected {
-  font-weight: 600;
+.app-sider .ant-menu-item:hover,
+.mobile-nav-content .ant-menu-item:hover {
+  color: var(--app-green) !important;
+  background: #e5e7e0 !important;
+}
+
+.app-sider .ant-menu-item-selected,
+.mobile-nav-content .ant-menu-item-selected {
+  background: var(--app-console) !important;
+  color: #f3f5f3 !important;
+  font-weight: 650;
+}
+
+.app-sider .ant-menu-item-selected::after,
+.mobile-nav-content .ant-menu-item-selected::after {
+  right: auto;
+  left: 0;
+  border-right: 3px solid var(--app-signal) !important;
 }
 
 .sider-bottom {
-  position: absolute;
-  right: 18px;
-  bottom: 22px;
-  left: 18px;
   display: grid;
   gap: 12px;
+  margin-top: auto;
+  padding: 20px 18px 22px;
 }
 
 .help-card {
   display: grid;
   gap: 5px;
   padding: 14px;
-  border-radius: 10px;
-  background: #f0f7ff;
-  color: #1677ff;
+  border: 1px solid #d3d6cf;
+  border-radius: 2px;
+  background: #e7e8e1;
+  color: var(--app-green);
   font-size: 12px;
+}
+
+.help-card span {
+  color: #7a847c;
+  font: 9px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: 0.1em;
+}
+
+.sider-bottom .ant-btn-primary {
+  border-radius: 3px;
+  box-shadow: none;
 }
 
 .top-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
   display: flex;
+  height: 70px;
   align-items: center;
-  height: 68px;
-  gap: 26px;
+  gap: 16px;
   padding: 0 28px;
-  border-bottom: 1px solid #edf0f5;
-  background: white;
+  border-bottom: 1px solid #d7d7d0;
+  background: rgba(251, 250, 246, 0.96);
 }
 
-.top-nav {
+.navigation-trigger {
+  flex: none;
+  border-radius: 2px !important;
+  color: #535e56;
+}
+
+.navigation-trigger:hover {
+  color: var(--app-green) !important;
+  background: #e8e8e1 !important;
+}
+
+.top-context {
   display: flex;
-  flex: 1;
-  justify-content: center;
-  gap: 38px;
-  color: #667085;
-  font-size: 14px;
+  min-width: 0;
+  align-items: baseline;
+  gap: 10px;
+  color: #7b847d;
+  font: 10px/1 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  letter-spacing: 0.09em;
 }
 
-.top-nav span {
-  position: relative;
-  display: inline-block;
-  padding: 23px 4px 5px;
+.top-context b {
+  color: #b0b5b1;
 }
 
-.top-nav .active {
-  border-bottom: none;
-  color: #1677ff;
-  font-weight: 600;
-}
-.top-nav .active::after {
-  content: '';
-  position:absolute;
-  left: 0;
-  right: 0;
-  bottom: 12px;
-  height: 2px;
-  background: #1677ff;
+.top-context strong {
+  overflow: hidden;
+  color: #2f3932;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .user-area {
-  color: #667085;
+  min-width: 0;
+  margin-left: auto;
+  color: #667069;
+}
+
+.user-area .ant-avatar {
+  background: var(--app-console);
+  color: var(--app-signal);
+}
+
+.local-mode-tag {
+  margin-inline-end: 4px;
+  border-radius: 2px;
+  font-weight: 600;
 }
 
 .top-status {
-  color: #16a34a;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--app-green);
   font-size: 12px;
+  white-space: nowrap;
+}
+
+.top-status--checking {
+  color: #64748b;
+}
+
+.top-status--retrying,
+.top-status--slow {
+  color: #b7791f;
+}
+
+.top-status--degraded {
+  color: #c2410c;
+}
+
+.top-status--offline {
+  color: #b83a35;
+}
+
+.top-status--mock {
+  color: #6f5b1d;
+}
+
+.user-name {
+  color: #4f5952 !important;
+}
+
+.user-chevron {
+  color: #929a94;
 }
 
 .main-content {
   width: 100%;
-  max-width: 1600px;
+  max-width: 1700px;
   margin: 0 auto;
-  padding: 22px 30px 40px;
+  padding: 20px 30px 44px;
+}
+
+.main-content > .ant-breadcrumb {
+  color: #828a84;
+  font-size: 12px;
+}
+
+.mobile-navigation-drawer .ant-drawer-content,
+.mobile-navigation-drawer .ant-drawer-header {
+  background: #eeede7;
+}
+
+.mobile-navigation-drawer .ant-drawer-header {
+  border-bottom-color: #d4d6cf;
+}
+
+.mobile-nav-content {
+  display: flex;
+  min-height: calc(100vh - 55px);
+  flex-direction: column;
+  background: #eeede7;
+}
+
+@media (max-width: 1199px) {
+  .main-content {
+    padding-inline: 22px;
+  }
+}
+
+@media (max-width: 991px) {
+  .top-header {
+    padding-inline: 20px;
+  }
+
+  .brand--compact {
+    display: flex;
+  }
+
+  .top-context {
+    margin-left: 6px;
+  }
+}
+
+@media (max-width: 767px) {
+  .top-header {
+    height: 60px;
+    gap: 10px;
+    padding-inline: 14px;
+  }
+
+  .brand--compact > span:last-child,
+  .top-context,
+  .local-mode-tag,
+  .user-name,
+  .user-chevron {
+    display: none;
+  }
+
+  .brand--compact .brand-mark {
+    width: 28px;
+    height: 28px;
+  }
+
+  .user-area {
+    gap: 8px !important;
+  }
+
+  .top-status {
+    font-size: 11px;
+  }
+
+  .main-content {
+    padding: 10px 0 32px;
+  }
+
+  .main-content > .ant-breadcrumb {
+    display: none;
+  }
+
+  .page:not(.overview-page) {
+    margin: 14px 14px 0;
+  }
+}
+
+@media (max-width: 420px) {
+  .top-status {
+    max-width: 90px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
 }
 
 .page {
@@ -675,19 +948,8 @@ body {
 }
 
 /* 平台模式选择与多设备报告 */
-.project-switcher {
-  width: calc(100% - 28px);
-  background: #fff;
-  cursor: pointer;
-}
-
-.project-switcher:hover {
-  border-color: #91caff;
-  color: #1677ff;
-}
-
 .planned-platform-page .ant-result-icon {
-  color: #1677ff;
+  color: var(--app-green);
 }
 
 .report-matrix-card .ant-card-body {
@@ -733,4 +995,116 @@ body {
 
 .device-output-panel .ant-btn {
   justify-self: start;
+}
+
+/* 物理设备与多连接 Endpoint 管理 */
+.device-management-tabs .ant-tabs-nav {
+  margin-bottom: 18px;
+}
+
+.device-tab-content {
+  width: 100%;
+}
+
+.network-endpoint-form {
+  display: flex;
+  row-gap: 12px;
+}
+
+.connection-mode-help {
+  display: block;
+  margin-top: 8px;
+}
+
+.device-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+  width: 100%;
+}
+
+.device-option-card {
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 10px;
+  width: 100%;
+  height: 100%;
+  padding: 14px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fff;
+  cursor: pointer;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+}
+
+.device-option-card .device-card-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.device-option-card.ant-checkbox-wrapper .ant-checkbox {
+  margin-top: 2px;
+}
+
+.device-option-card:hover {
+  border-color: #91caff;
+}
+
+.device-option-card.selected {
+  border-color: #1677ff;
+  background: #f0f7ff;
+  box-shadow: 0 0 0 1px rgb(22 119 255 / 8%);
+}
+
+.device-option-card.unavailable {
+  background: #f8fafc;
+  color: #98a2b3;
+  cursor: not-allowed;
+}
+
+.device-option-card.busy:not(.unavailable) {
+  border-color: #ffd591;
+}
+
+.device-card-header,
+.device-card-tags {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.device-card-tags {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.device-card-reason {
+  display: block;
+  margin-top: 10px;
+}
+
+@media (max-width: 900px) {
+  .network-endpoint-form {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .network-endpoint-form .ant-form-item {
+    margin-inline-end: 0;
+  }
+
+  .network-endpoint-form .ant-select,
+  .network-endpoint-form .ant-input,
+  .network-endpoint-form .ant-input-number {
+    width: 100% !important;
+  }
+}
+
+.device-option-card.disabled {
+  background: #f8fafc;
+  color: #98a2b3;
+  cursor: not-allowed;
 }
