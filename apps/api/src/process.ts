@@ -1,4 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { createWriteStream, type WriteStream } from 'node:fs'
+import type { Readable } from 'node:stream'
+import { finished } from 'node:stream/promises'
 
 const DEFAULT_MAX_OUTPUT_BYTES = 4 * 1024 * 1024
 const DEFAULT_KILL_GRACE_MS = 3000
@@ -9,6 +12,8 @@ export interface ProcessResult {
   stderr: string
   stdoutTruncated?: boolean
   stderrTruncated?: boolean
+  stdoutBytes?: number
+  stderrBytes?: number
 }
 
 export interface RunProcessOptions {
@@ -17,6 +22,8 @@ export interface RunProcessOptions {
   maxOutputBytes?: number
   killGraceMs?: number
   cwd?: string
+  captureStdoutPath?: string
+  captureStderrPath?: string
 }
 
 export interface ProcessRunner {
@@ -35,11 +42,22 @@ export class ProcessError extends Error {
   }
 }
 
-function boundedAppend(current: string, chunk: Buffer, maxBytes: number) {
-  const remaining = Math.max(0, maxBytes - Buffer.byteLength(current))
-  if (remaining === 0) return { value: current, truncated: true }
-  if (chunk.length <= remaining) return { value: current + chunk.toString('utf8'), truncated: false }
-  return { value: current + chunk.subarray(0, remaining).toString('utf8'), truncated: true }
+interface BoundedOutput {
+  chunks: Buffer[]
+  retainedBytes: number
+  totalBytes: number
+  truncated: boolean
+}
+
+function appendBounded(output: BoundedOutput, chunk: Buffer, maxBytes: number) {
+  output.totalBytes += chunk.length
+  const remaining = Math.max(0, maxBytes - output.retainedBytes)
+  if (remaining > 0) {
+    const retained = chunk.length <= remaining ? chunk : chunk.subarray(0, remaining)
+    output.chunks.push(retained)
+    output.retainedBytes += retained.length
+  }
+  if (chunk.length > remaining) output.truncated = true
 }
 
 function signalProcess(child: ChildProcessWithoutNullStreams, signal: NodeJS.Signals) {
@@ -50,6 +68,30 @@ function signalProcess(child: ChildProcessWithoutNullStreams, signal: NodeJS.Sig
   } catch {
     try { child.kill(signal) } catch { /* 进程可能已退出。 */ }
   }
+}
+
+function createCapture(targetPath?: string) {
+  return targetPath ? createWriteStream(targetPath, { flags: 'w' }) : undefined
+}
+
+async function finishCapture(capture?: WriteStream) {
+  if (!capture) return
+  if (!capture.writableEnded && !capture.destroyed) capture.end()
+  try {
+    await finished(capture)
+  } catch {
+    // The stream error is retained separately and converted to ProcessError
+    // after stdout/stderr and process exit evidence have been assembled.
+  }
+}
+
+function writeCapture(capture: WriteStream | undefined, source: Readable, chunk: Buffer) {
+  if (!capture || capture.destroyed) return
+  if (capture.write(chunk)) return
+  source.pause()
+  const resume = () => source.resume()
+  capture.once('drain', resume)
+  capture.once('close', resume)
 }
 
 export function runProcess(
@@ -72,11 +114,23 @@ export function runProcess(
       return
     }
 
-    let stdout = ''
-    let stderr = ''
-    let stdoutTruncated = false
-    let stderrTruncated = false
+    const stdout: BoundedOutput = {
+      chunks: [],
+      retainedBytes: 0,
+      totalBytes: 0,
+      truncated: false,
+    }
+    const stderr: BoundedOutput = {
+      chunks: [],
+      retainedBytes: 0,
+      totalBytes: 0,
+      truncated: false,
+    }
+    let captureError: Error | undefined
+    const stdoutCapture = createCapture(options.captureStdoutPath)
+    const stderrCapture = createCapture(options.captureStderrPath)
     let settled = false
+    let finalizing = false
     let terminationError: unknown
     let killTimer: NodeJS.Timeout | undefined
 
@@ -89,10 +143,12 @@ export function runProcess(
     function result(code: number): ProcessResult {
       return {
         code,
-        stdout,
-        stderr,
-        ...(stdoutTruncated ? { stdoutTruncated: true } : {}),
-        ...(stderrTruncated ? { stderrTruncated: true } : {}),
+        stdout: Buffer.concat(stdout.chunks, stdout.retainedBytes).toString('utf8'),
+        stderr: Buffer.concat(stderr.chunks, stderr.retainedBytes).toString('utf8'),
+        ...(stdout.truncated ? { stdoutTruncated: true } : {}),
+        ...(stderr.truncated ? { stderrTruncated: true } : {}),
+        stdoutBytes: stdout.totalBytes,
+        stderrBytes: stderr.totalBytes,
       }
     }
 
@@ -116,23 +172,41 @@ export function runProcess(
       killTimer = setTimeout(() => signalProcess(child, 'SIGKILL'), killGraceMs)
     }
 
-    options.signal?.addEventListener('abort', onAbort, { once: true })
-    if (options.signal?.aborted) onAbort()
+    for (const capture of [stdoutCapture, stderrCapture]) {
+      capture?.on('error', (error) => {
+        captureError ??= error
+        terminate(new ProcessError(`命令 Evidence 写入失败：${error.message}`, command, args))
+      })
+    }
 
     child.stdout.on('data', (chunk: Buffer) => {
-      const appended = boundedAppend(stdout, chunk, maxOutputBytes)
-      stdout = appended.value
-      stdoutTruncated ||= appended.truncated
+      appendBounded(stdout, chunk, maxOutputBytes)
+      writeCapture(stdoutCapture, child.stdout, chunk)
     })
     child.stderr.on('data', (chunk: Buffer) => {
-      const appended = boundedAppend(stderr, chunk, maxOutputBytes)
-      stderr = appended.value
-      stderrTruncated ||= appended.truncated
+      appendBounded(stderr, chunk, maxOutputBytes)
+      writeCapture(stderrCapture, child.stderr, chunk)
     })
-    child.on('error', finishReject)
-    child.on('close', (code) => {
+
+    async function finalize(code: number, processError?: unknown) {
+      if (settled || finalizing) return
+      finalizing = true
+      await Promise.all([finishCapture(stdoutCapture), finishCapture(stderrCapture)])
       if (settled) return
-      const processResult = result(code ?? -1)
+      const processResult = result(code)
+      if (captureError) {
+        finishReject(new ProcessError(
+          `命令 Evidence 写入失败：${captureError.message}`,
+          command,
+          args,
+          processResult,
+        ))
+        return
+      }
+      if (processError) {
+        finishReject(processError)
+        return
+      }
       if (terminationError instanceof ProcessError) {
         finishReject(new ProcessError(terminationError.message, command, args, processResult))
         return
@@ -148,7 +222,13 @@ export function runProcess(
       } else {
         finishReject(new ProcessError(`${command} 执行失败`, command, args, processResult))
       }
-    })
+    }
+
+    child.on('error', (error) => { void finalize(-1, error) })
+    child.on('close', (code) => { void finalize(code ?? -1) })
+
+    options.signal?.addEventListener('abort', onAbort, { once: true })
+    if (options.signal?.aborted) onAbort()
   })
 }
 
