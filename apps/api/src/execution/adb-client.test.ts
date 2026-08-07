@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { AdbDeviceClient } from './adb-client.js'
+import { AdbDeviceClient, type AdbObservation } from './adb-client.js'
 import { ProcessError, type ProcessRunner } from '../process.js'
 
 const temporaryDirectories: string[] = []
@@ -42,6 +42,65 @@ describe('AdbDeviceClient package detection', () => {
 })
 
 
+describe('AdbDeviceClient observations', () => {
+  it('distinguishes an absent path from an ADB observation failure', async () => {
+    const results = [
+      { code: 1, stdout: '', stderr: 'stat: /missing.mp4: No such file or directory' },
+      { code: 2, stdout: '', stderr: 'stat: permission denied' },
+    ]
+    const runner: ProcessRunner = {
+      async run() {
+        return results.shift()!
+      },
+    }
+    const device = new AdbDeviceClient('/adb', 'serial-1', runner)
+
+    await expect(device.stat('/missing.mp4', new AbortController().signal)).resolves.toMatchObject({
+      kind: 'absent',
+    } satisfies Partial<AdbObservation<number>>)
+    await expect(device.stat('/protected.mp4', new AbortController().signal)).resolves.toMatchObject({
+      kind: 'failed',
+      error: expect.objectContaining({ code: 'ADB_OBSERVATION_FAILED' }),
+    } satisfies Partial<AdbObservation<number>>)
+  })
+
+  it('treats pidof exit code 1 as absent but preserves other failures', async () => {
+    const results = [
+      { code: 1, stdout: '', stderr: '' },
+      { code: 2, stdout: '', stderr: 'permission denied' },
+    ]
+    const runner: ProcessRunner = {
+      async run() {
+        return results.shift()!
+      },
+    }
+    const device = new AdbDeviceClient('/adb', 'serial-1', runner)
+
+    await expect(device.isPackageRunning('com.example.app', new AbortController().signal)).resolves.toMatchObject({
+      kind: 'absent',
+    })
+    await expect(device.isPackageRunning('com.example.app', new AbortController().signal)).resolves.toMatchObject({
+      kind: 'failed',
+      error: expect.objectContaining({ code: 'ADB_OBSERVATION_FAILED' }),
+    })
+  })
+
+  it('does not swallow cancellation while observing device state', async () => {
+    const controller = new AbortController()
+    const runner: ProcessRunner = {
+      async run(_command, _args, options) {
+        options?.signal && controller.abort()
+        throw new DOMException('任务已取消', 'AbortError')
+      },
+    }
+    const device = new AdbDeviceClient('/adb', 'serial-1', runner)
+
+    await expect(device.isPackageRunning('com.example.app', controller.signal)).rejects.toMatchObject({
+      name: 'AbortError',
+    })
+  })
+})
+
 describe('AdbDeviceClient logcat clearing', () => {
   it('clears all buffers on the explicitly selected device', async () => {
     const calls: Array<{ command: string; args: string[] }> = []
@@ -56,6 +115,32 @@ describe('AdbDeviceClient logcat clearing', () => {
     await device.clearLogcat(new AbortController().signal)
 
     expect(calls).toEqual([{ command: '/adb', args: ['-s', 'serial-1', 'logcat', '-b', 'all', '-c'] }])
+  })
+
+
+  it('returns non-zero ProcessResult through the observation seam without converting it to a business failure', async () => {
+    const runner: ProcessRunner = {
+      async run(command, args) {
+        throw new ProcessError('adb probe failed', command, args, {
+          code: 1,
+          stdout: 'partial observation',
+          stderr: 'permission denied',
+          stdoutBytes: 19,
+          stderrBytes: 17,
+        })
+      },
+    }
+    const device = new AdbDeviceClient('/adb', 'serial-1', runner)
+
+    await expect(device.observe(
+      ['shell', 'dumpsys', 'power'],
+      new AbortController().signal,
+      10_000,
+    )).resolves.toMatchObject({
+      code: 1,
+      stdout: 'partial observation',
+      stderr: 'permission denied',
+    })
   })
 
   it('maps a clear failure to LOGCAT_CLEAR_FAILED', async () => {
