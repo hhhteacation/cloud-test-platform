@@ -5,7 +5,7 @@ import { createDialogInteractionState } from './contracts.js'
 import type { HandledDialog, PreparationEvent } from './contracts.js'
 import { hasDialogObservationProfileForManufacturer } from './dialog-profiles.js'
 import { DialogProgressTracker } from './dialog-progress.js'
-import { SystemDialogController } from './system-dialog-controller.js'
+import type { SystemDialogController } from './system-dialog-controller.js'
 
 interface PostLaunchDialogRequest {
   manufacturer: string
@@ -17,13 +17,48 @@ interface PostLaunchDialogRequest {
   onEvent: (event: PreparationEvent) => void
 }
 
+type PostLaunchDialogInspector = Pick<
+  SystemDialogController,
+  'inspectAndHandle' | 'saveTimeoutDiagnostics'
+>
+
+function postLaunchDialogOptions(
+  request: PostLaunchDialogRequest,
+  automation: ApkDialogAutomationConfig,
+) {
+  return {
+    manufacturer: request.manufacturer,
+    packageName: request.packageName,
+    applicationLabel: request.applicationLabel,
+    phase: 'post-launch' as const,
+    profileIds: automation.profileIds,
+    diagnosticsDirectory: request.diagnosticsDirectory,
+    maxActions: automation.maxActions,
+    signal: request.signal,
+  }
+}
+
+function stablePostLaunchFailure(inspection: { kind: 'unrecognized' | 'waiting' }) {
+  if (inspection.kind === 'waiting') {
+    return new TaskExecutionError(
+      '已执行应用启动后弹窗白名单操作，但界面在宽限期内没有发生可验证迁移',
+      'POST_LAUNCH_DIALOG_TIMEOUT',
+    )
+  }
+
+  return new TaskExecutionError(
+    '检测到应用启动后的系统提示，但界面未满足严格白名单，平台拒绝自动点击',
+    'POST_LAUNCH_DIALOG_UNRECOGNIZED',
+  )
+}
+
 /**
  * Handles protocol-declared, optional system compatibility notices that can
  * appear after the app's warmup launch. It does not grant permissions, change
  * global settings or accept generic confirmation buttons.
  */
 export class PostLaunchDialogCoordinator {
-  constructor(private readonly dialogs: SystemDialogController) {}
+  constructor(private readonly dialogs: PostLaunchDialogInspector) {}
 
   async handleOptionalDialog(request: PostLaunchDialogRequest): Promise<HandledDialog[]> {
     const automation = request.automation
@@ -34,71 +69,64 @@ export class PostLaunchDialogCoordinator {
       'post-launch',
     )) return []
 
+    const options = postLaunchDialogOptions(request, automation)
+    const handledDialogs: HandledDialog[] = []
     const interactionState = createDialogInteractionState()
     const startedAt = Date.now()
     const unknownGraceMs = automation.unrecognizedGraceMs ?? 1_500
     const dialogProgress = new DialogProgressTracker()
+    let observedSystemDialog = false
 
     while (Date.now() - startedAt < automation.timeoutMs) {
-      const inspection = await this.dialogs.inspectAndHandle({
-        manufacturer: request.manufacturer,
-        packageName: request.packageName,
-        applicationLabel: request.applicationLabel,
-        phase: 'post-launch',
-        profileIds: automation.profileIds,
-        diagnosticsDirectory: request.diagnosticsDirectory,
-        maxActions: automation.maxActions,
-        signal: request.signal,
-      }, interactionState)
+      const inspection = await this.dialogs.inspectAndHandle(options, interactionState)
 
-      if (inspection.kind === 'handled') {
+      if (inspection.kind === 'none') {
+        dialogProgress.reset()
+        if (handledDialogs.length > 0) return handledDialogs
+      } else if (inspection.kind === 'handled') {
+        observedSystemDialog = true
+        handledDialogs.push(inspection.dialog)
+        dialogProgress.reset()
         request.onEvent({
           phase: 'handling_app_dialog',
           progress: 24,
-          message: `已通过 ${inspection.dialog.profileId} 自动关闭应用启动兼容提示`,
+          message: `已通过 ${inspection.dialog.profileId} 自动关闭应用启动兼容提示，正在验证页面迁移`,
         })
-        return [inspection.dialog]
-      }
-
-      if (inspection.kind === 'manual-action-required') {
+      } else if (inspection.kind === 'manual-action-required') {
+        observedSystemDialog = true
         request.onEvent({
           phase: 'handling_app_dialog',
           progress: 24,
           message: inspection.block.summary,
         })
+        // The current block Profile represents an unfinished install
+        // authorization. Preserve the business cause even when it remains
+        // visible after launch instead of relabeling it as a post-launch issue.
         throw new TaskExecutionError(
           inspection.block.summary,
-          'POST_LAUNCH_DIALOG_MANUAL_ACTION_REQUIRED',
+          'INSTALL_USER_ACTION_REQUIRED',
         )
-      }
-
-      if (inspection.kind === 'unrecognized' || inspection.kind === 'waiting') {
+      } else {
+        observedSystemDialog = true
         const progress = dialogProgress.observe(inspection)
         if (progress.elapsedMs >= unknownGraceMs) {
-          await this.dialogs.saveTimeoutDiagnostics({
-            manufacturer: request.manufacturer,
-            packageName: request.packageName,
-            applicationLabel: request.applicationLabel,
-        phase: 'post-launch',
-            profileIds: automation.profileIds,
-            diagnosticsDirectory: request.diagnosticsDirectory,
-            maxActions: automation.maxActions,
-            signal: request.signal,
-          })
-          throw new TaskExecutionError(
-            '检测到应用启动后的系统提示，但界面未满足严格白名单，平台拒绝自动点击',
-            'POST_LAUNCH_DIALOG_UNRECOGNIZED',
-          )
+          await this.dialogs.saveTimeoutDiagnostics(options)
+          throw stablePostLaunchFailure(inspection)
         }
-      } else {
-        dialogProgress.reset()
       }
 
       await delay(automation.pollIntervalMs, request.signal)
     }
 
-    // This notice is optional. A timeout with no recognized/unknown dialog
-    // means the device did not show it, so application preparation may continue.
-    return []
+    // The notice is optional only when no system dialog was observed. Once a
+    // dialog or action is observed, leaving the phase without a verified page
+    // transition would leak an unresolved UI state into the protocol executor.
+    if (!observedSystemDialog) return []
+
+    await this.dialogs.saveTimeoutDiagnostics(options)
+    throw new TaskExecutionError(
+      '应用启动后的系统提示在协议时限内没有完成可验证迁移',
+      'POST_LAUNCH_DIALOG_TIMEOUT',
+    )
   }
 }

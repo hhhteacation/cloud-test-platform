@@ -507,7 +507,7 @@ describe('ApkInstallCoordinator', () => {
     }
   })
 
-  it('treats a recognized action with no visible transition as waiting, not as a second click', async () => {
+  it('reports a recognized action with no visible transition as an install timeout, not an unknown page', async () => {
     const device = new StuckAfterTapInstallDevice()
     const dialogs = new SystemDialogController(device, async () => undefined)
     const coordinator = new ApkInstallCoordinator(device, dialogs)
@@ -530,7 +530,7 @@ describe('ApkInstallCoordinator', () => {
       signal: new AbortController().signal,
       onEvent: () => undefined,
     })).rejects.toMatchObject({
-      code: 'INSTALL_DIALOG_UNRECOGNIZED',
+      code: 'INSTALL_DIALOG_TIMEOUT',
     })
 
     expect(device.tapCount).toBe(1)

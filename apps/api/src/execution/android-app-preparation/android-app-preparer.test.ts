@@ -451,7 +451,7 @@ describe('DefaultAndroidAppPreparer', () => {
       signal: new AbortController().signal,
       onEvent: () => undefined,
     })).rejects.toMatchObject({
-      code: 'POST_LAUNCH_DIALOG_MANUAL_ACTION_REQUIRED',
+      code: 'INSTALL_USER_ACTION_REQUIRED',
     })
   })
 

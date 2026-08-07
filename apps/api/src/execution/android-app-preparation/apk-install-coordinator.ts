@@ -51,6 +51,20 @@ function explainInstallFailure(error: unknown) {
   )
 }
 
+function stableInstallDialogFailure(inspection: { kind: 'unrecognized' | 'waiting' }) {
+  if (inspection.kind === 'waiting') {
+    return new TaskExecutionError(
+      '已执行安装器严格白名单动作，但界面在宽限期内没有发生可验证迁移',
+      'INSTALL_DIALOG_TIMEOUT',
+    )
+  }
+
+  return new TaskExecutionError(
+    '检测到安装器窗口，但界面未满足任何严格白名单 Profile，平台拒绝自动点击',
+    'INSTALL_DIALOG_UNRECOGNIZED',
+  )
+}
+
 export class ApkInstallCoordinator {
   constructor(
     private readonly device: AndroidPreparationDevice,
@@ -214,14 +228,11 @@ export class ApkInstallCoordinator {
             if (finalInspection.kind === 'unrecognized' || finalInspection.kind === 'waiting') {
               const finalProgress = dialogProgress.observe(finalInspection)
               if (finalProgress.changed) continue
-            }
 
-            await this.dialogs.saveTimeoutDiagnostics(inspectionOptions)
-            installController.abort()
-            throw new TaskExecutionError(
-              '检测到安装器窗口，但界面未满足任何严格白名单 Profile，平台拒绝自动点击',
-              'INSTALL_DIALOG_UNRECOGNIZED',
-            )
+              await this.dialogs.saveTimeoutDiagnostics(inspectionOptions)
+              installController.abort()
+              throw stableInstallDialogFailure(finalInspection)
+            }
           }
         } else {
           dialogProgress.reset()
