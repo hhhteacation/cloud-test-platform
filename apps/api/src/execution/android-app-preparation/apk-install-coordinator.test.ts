@@ -62,6 +62,19 @@ class BlockingInstallDevice implements AndroidPreparationDevice {
   }
 }
 
+class StuckAfterTapInstallDevice extends BlockingInstallDevice {
+  tapCount = 0
+
+  override async run(args: string[], signal: AbortSignal): Promise<ProcessResult> {
+    if (args.slice(0, 3).join(' ') === 'shell input tap') {
+      this.calls.push(args)
+      this.tapCount += 1
+      return { code: 0, stdout: '', stderr: '' }
+    }
+    return super.run(args, signal)
+  }
+}
+
 class CancelledInstallDevice extends BlockingInstallDevice {
   override async run(args: string[], signal: AbortSignal): Promise<ProcessResult> {
     if (args.join(' ') === 'shell dumpsys window windows') {
@@ -492,6 +505,35 @@ describe('ApkInstallCoordinator', () => {
     } finally {
       await rm(diagnosticsDirectory, { recursive: true, force: true })
     }
+  })
+
+  it('treats a recognized action with no visible transition as waiting, not as a second click', async () => {
+    const device = new StuckAfterTapInstallDevice()
+    const dialogs = new SystemDialogController(device, async () => undefined)
+    const coordinator = new ApkInstallCoordinator(device, dialogs)
+
+    await expect(coordinator.install({
+      packageName: 'com.morphoinc.videopostprocessor',
+      applicationLabel: 'Morpho VideoStabilizer',
+      apkPath: '/tmp/morpho.apk',
+      installMode: 'clean',
+      manufacturer: 'vivo',
+      diagnosticsDirectory: '/tmp/not-used',
+      automation: {
+        mode: 'strict-whitelist',
+        profileIds: ['vivo-package-installer-v1'],
+        timeoutMs: 120,
+        pollIntervalMs: 1,
+        maxActions: 4,
+        unrecognizedGraceMs: 20,
+      },
+      signal: new AbortController().signal,
+      onEvent: () => undefined,
+    })).rejects.toMatchObject({
+      code: 'INSTALL_DIALOG_UNRECOGNIZED',
+    })
+
+    expect(device.tapCount).toBe(1)
   })
 
   it('stops monitoring and never clicks after task cancellation', async () => {

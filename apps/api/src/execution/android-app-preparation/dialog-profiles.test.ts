@@ -21,7 +21,7 @@ describe('strict Android system dialog profiles', () => {
       packageName: 'com.morphoinc.videopostprocessor',
       applicationLabel: 'Morpho VideoStabilizer',
       focusedWindowPackage: 'com.vivo.packageinstaller',
-      activeInstall: true,
+      phase: 'install',
       nodes: parseUiNodes(fixture('vivo-install-warning.xml')),
     })
     expect(match?.profileId).toBe('vivo-package-installer-v1')
@@ -38,7 +38,7 @@ describe('strict Android system dialog profiles', () => {
       packageName: 'com.morphoinc.videopostprocessor',
       applicationLabel: 'Morpho VideoStabilizer',
       focusedWindowPackage: 'com.android.packageinstaller',
-      activeInstall: true,
+      phase: 'install',
       nodes: parseUiNodes(xml),
     })
 
@@ -53,7 +53,7 @@ describe('strict Android system dialog profiles', () => {
       packageName: 'com.morphoinc.videopostprocessor',
       applicationLabel: 'Morpho VideoStabilizer',
       focusedWindowPackage: 'com.oplus.appdetail',
-      activeInstall: true,
+      phase: 'install',
       nodes: parseUiNodes(fixture('oplus-coloros-real-install-risk.xml')),
     })
 
@@ -70,7 +70,7 @@ describe('strict Android system dialog profiles', () => {
       applicationLabel: 'Morpho VideoStabilizer',
       focusedWindowPackage: 'com.miui.securitycenter',
       focusedWindowComponent: 'com.miui.securitycenter/com.miui.permcenter.install.AdbInstallActivity',
-      activeInstall: true,
+      phase: 'install',
       nodes: parseUiNodes(fixture('xiaomi-hyperos-adb-install-confirmation.xml')),
     })
 
@@ -89,7 +89,7 @@ describe('strict Android system dialog profiles', () => {
       applicationLabel: 'Morpho VideoStabilizer',
       focusedWindowPackage: 'com.miui.securitycenter',
       focusedWindowComponent: 'com.miui.securitycenter/com.miui.permcenter.install.AdbInstallActivity',
-      activeInstall: true,
+      phase: 'install',
       nodes: parseUiNodes(xml),
     }
     const guardedContexts = [
@@ -119,7 +119,7 @@ describe('strict Android system dialog profiles', () => {
       packageName: 'com.morphoinc.videopostprocessor',
       applicationLabel: 'Morpho VideoStabilizer',
       focusedWindowPackage: 'com.android.permissioncontroller',
-      activeInstall: false,
+      phase: 'runtime-permission',
       nodes: parseUiNodes(fixture('oplus-coloros-runtime-permissions.xml')),
     })
 
@@ -138,7 +138,7 @@ describe('strict Android system dialog profiles', () => {
       applicationLabel: 'Morpho VideoStabilizer',
       focusedWindowPackage: 'com.android.permissioncontroller',
       focusedWindowComponent: 'com.android.permissioncontroller/com.oplusos.permissioncontroller.permission.ui.OplusCompatibilityAlertActivity',
-      activeInstall: false,
+      phase: 'post-launch',
       nodes: parseUiNodes(fixture('oplus-coloros-storage-compatibility-warning.xml')),
     })
 
@@ -155,7 +155,7 @@ describe('strict Android system dialog profiles', () => {
       applicationLabel: 'Morpho VideoStabilizer',
       focusedWindowPackage: 'com.android.permissioncontroller',
       focusedWindowComponent: 'com.android.permissioncontroller/.UnrelatedActivity',
-      activeInstall: false,
+      phase: 'post-launch',
       nodes: parseUiNodes(fixture('oplus-coloros-storage-compatibility-warning.xml')),
     })
 
@@ -172,7 +172,7 @@ describe('strict Android system dialog profiles', () => {
       packageName: 'com.morphoinc.videopostprocessor',
       applicationLabel: 'Morpho VideoStabilizer',
       focusedWindowPackage: 'com.android.permissioncontroller',
-      activeInstall: false,
+      phase: 'post-launch',
       nodes: parseUiNodes(xml),
     })
 
@@ -185,7 +185,7 @@ describe('strict Android system dialog profiles', () => {
       packageName: 'com.morphoinc.videopostprocessor',
       applicationLabel: 'Morpho VideoStabilizer',
       focusedWindowPackage: 'com.hihonor.systemmanager',
-      activeInstall: true,
+      phase: 'install',
       nodes: parseUiNodes(fixture('honor-install-warning.xml')),
     })
     expect(match?.action).toBe('confirm-checkbox')
@@ -199,7 +199,7 @@ describe('strict Android system dialog profiles', () => {
       packageName: 'com.morphoinc.videopostprocessor',
       applicationLabel: 'Morpho VideoStabilizer',
       focusedWindowPackage: 'com.android.packageinstaller',
-      activeInstall: true,
+      phase: 'install',
       nodes: parseUiNodes(fixture('honor-magic-os-real-install-warning.xml')),
     })
 
@@ -216,7 +216,7 @@ describe('strict Android system dialog profiles', () => {
       packageName: 'com.morphoinc.videopostprocessor',
       applicationLabel: 'Morpho VideoStabilizer',
       focusedWindowPackage: 'com.android.packageinstaller',
-      activeInstall: true,
+      phase: 'install',
       nodes: parseUiNodes(xml),
     })
     const continueButton = matchDialogAction(['honor-package-installer-v1'], {
@@ -224,7 +224,7 @@ describe('strict Android system dialog profiles', () => {
       packageName: 'com.morphoinc.videopostprocessor',
       applicationLabel: 'Morpho VideoStabilizer',
       focusedWindowPackage: 'com.android.packageinstaller',
-      activeInstall: true,
+      phase: 'install',
       nodes: parseUiNodes(xml.replace('checkable="true" checked="false" clickable="true"', 'checkable="true" checked="true" clickable="true"')),
     })
 
@@ -249,7 +249,7 @@ describe('strict Android system dialog profiles', () => {
       applicationLabel: 'Morpho VideoStabilizer',
       focusedWindowPackage: extractFocusedWindowPackage(window),
       focusedWindowComponent: extractFocusedWindowComponent(window),
-      activeInstall: true,
+      phase: 'install',
       nodes: parseUiNodes(fixture('honor-x50-package-installer-unknown-source-warning.xml')),
     })
 
@@ -278,7 +278,7 @@ describe('strict Android system dialog profiles', () => {
       applicationLabel: 'Morpho VideoStabilizer',
       focusedWindowPackage: extractFocusedWindowPackage(window),
       focusedWindowComponent: extractFocusedWindowComponent(window),
-      activeInstall: true,
+      phase: 'install',
       nodes: parseUiNodes(fixture('honor-x50-package-installer-icp-notice.xml')),
     })
 
@@ -301,7 +301,7 @@ describe('strict Android system dialog profiles', () => {
       applicationLabel: 'Morpho VideoStabilizer',
       focusedWindowPackage: extractFocusedWindowPackage(window),
       focusedWindowComponent: extractFocusedWindowComponent(window),
-      activeInstall: true,
+      phase: 'install',
       nodes: parseUiNodes(fixture('honor-x50-package-installer-unknown-source-warning.xml')),
     })
 
@@ -316,7 +316,7 @@ describe('strict Android system dialog profiles', () => {
       deviceModel: 'ALI-AN00',
       packageName: 'com.morphoinc.videopostprocessor',
       applicationLabel: 'Morpho VideoStabilizer',
-      activeInstall: true,
+      phase: 'install',
     }
     const cases = [
       {
@@ -367,7 +367,7 @@ describe('strict Android system dialog profiles', () => {
       applicationLabel: 'Morpho VideoStabilizer',
       focusedWindowPackage: 'com.android.packageinstaller',
       focusedWindowComponent: 'com.android.packageinstaller/com.android.packageinstaller.PackageInstallerActivity',
-      activeInstall: true,
+      phase: 'install',
       nodes: parseUiNodes(fixture(
         'honor-x50-magic-os-9-package-installer-recommendations-install.xml',
       )),
@@ -400,7 +400,7 @@ describe('strict Android system dialog profiles', () => {
       applicationLabel: 'Morpho VideoStabilizer',
       focusedWindowPackage: 'com.android.packageinstaller',
       focusedWindowComponent: 'com.android.packageinstaller/com.android.packageinstaller.PackageInstallerActivity',
-      activeInstall: true,
+      phase: 'install',
       nodes: parseUiNodes(xml),
     })
 
@@ -429,7 +429,7 @@ describe('strict Android system dialog profiles', () => {
       applicationLabel: 'Morpho VideoStabilizer',
       focusedWindowPackage: 'com.android.packageinstaller',
       focusedWindowComponent: 'com.android.packageinstaller/com.android.packageinstaller.PackageInstallerActivity',
-      activeInstall: true,
+      phase: 'install',
       nodes: parseUiNodes(fixture(
         'honor-x50-magic-os-9-package-installer-recommendations-install.xml',
       )),
@@ -455,12 +455,12 @@ describe('strict Android system dialog profiles', () => {
       applicationLabel: 'Morpho VideoStabilizer',
       focusedWindowPackage: 'com.android.packageinstaller',
       focusedWindowComponent: 'com.android.packageinstaller/com.android.packageinstaller.PackageInstallerActivity',
-      activeInstall: true,
+      phase: 'install',
     }
     const guardedContexts = [
       { ...base, manufacturer: 'Xiaomi', nodes: parseUiNodes(sourceXml) },
       { ...base, packageName: 'com.example.unreviewed', nodes: parseUiNodes(sourceXml) },
-      { ...base, activeInstall: false, nodes: parseUiNodes(sourceXml) },
+      { ...base, phase: 'post-launch', nodes: parseUiNodes(sourceXml) },
       { ...base, focusedWindowComponent: 'com.android.packageinstaller/.OtherActivity', nodes: parseUiNodes(sourceXml) },
       { ...base, nodes: parseUiNodes(sourceXml.replaceAll('未经荣耀安全审核', '风险未知')) },
       { ...base, nodes: parseUiNodes(sourceXml.replaceAll('该应用未上架', '来源未知')) },
@@ -489,7 +489,7 @@ describe('strict Android system dialog profiles', () => {
       applicationLabel: 'Morpho VideoStabilizer',
       focusedWindowPackage: 'com.android.packageinstaller',
       focusedWindowComponent: 'com.android.packageinstaller/com.android.packageinstaller.PackageInstallerActivity',
-      activeInstall: true,
+      phase: 'install',
       nodes: parseUiNodes(xml),
     }
 
@@ -515,7 +515,7 @@ describe('strict Android system dialog profiles', () => {
       applicationLabel: 'Morpho VideoStabilizer',
       focusedWindowPackage: extractFocusedWindowPackage(window),
       focusedWindowComponent: extractFocusedWindowComponent(window),
-      activeInstall: true,
+      phase: 'install',
       nodes: parseUiNodes(fixture(
         'honor-x50-magic-os-9-package-installer-recommendations-install.xml',
       )),
@@ -543,7 +543,7 @@ describe('strict Android system dialog profiles', () => {
       applicationLabel: 'Morpho VideoStabilizer',
       focusedWindowPackage: 'com.android.packageinstaller',
       focusedWindowComponent: 'com.android.packageinstaller/com.android.packageinstaller.PackageInstallerActivity',
-      activeInstall: true,
+      phase: 'install',
       nodes: parseUiNodes(xml),
     }
 
@@ -557,7 +557,7 @@ describe('strict Android system dialog profiles', () => {
       applicationLabel: 'Morpho VideoStabilizer',
       focusedWindowPackage: 'com.android.packageinstaller',
       focusedWindowComponent: 'com.android.packageinstaller/com.android.packageinstaller.PackageInstallerActivity',
-      activeInstall: true,
+      phase: 'install',
       nodes: parseUiNodes(fixture('honor-x50-magic-os-9-package-installer-recommendations.xml')),
     }
 
@@ -572,12 +572,11 @@ describe('strict Android system dialog profiles', () => {
       applicationLabel: 'Morpho VideoStabilizer',
       focusedWindowPackage: 'com.android.packageinstaller',
       focusedWindowComponent: 'com.android.packageinstaller/com.android.packageinstaller.PackageInstallerActivity',
-      activeInstall: true,
+      phase: 'install',
       nodes: parseUiNodes(xml),
     }
     const guardedContexts = [
       { ...base, packageName: 'com.example.unreviewed' },
-      { ...base, activeInstall: false },
       { ...base, focusedWindowPackage: 'com.android.permissioncontroller' },
       { ...base, focusedWindowComponent: 'com.android.packageinstaller/.OtherActivity' },
       { ...base, nodes: parseUiNodes(xml.replaceAll('Morpho VideoStabilizer', 'Unknown App')) },
@@ -605,7 +604,7 @@ describe('strict Android system dialog profiles', () => {
       applicationLabel: 'Morpho VideoStabilizer',
       focusedWindowPackage: 'com.android.packageinstaller',
       focusedWindowComponent: 'com.android.packageinstaller/com.hihonor.packageinstaller.hncust.safemode.sheet.SafeModeBottomSheetActivity',
-      activeInstall: true,
+      phase: 'install',
       nodes: parseUiNodes(fixture('honor-x50-safe-mode-install-sheet.xml')),
     })
 
@@ -631,13 +630,12 @@ describe('strict Android system dialog profiles', () => {
       applicationLabel: 'Morpho VideoStabilizer',
       focusedWindowPackage: 'com.android.packageinstaller',
       focusedWindowComponent: 'com.android.packageinstaller/com.hihonor.packageinstaller.hncust.safemode.sheet.SafeModeBottomSheetActivity',
-      activeInstall: true,
+      phase: 'install',
       nodes: parseUiNodes(xml),
     }
     const guardedContexts = [
       { ...base, manufacturer: 'Xiaomi' },
       { ...base, packageName: 'com.example.unreviewed' },
-      { ...base, activeInstall: false },
       { ...base, focusedWindowComponent: 'com.android.packageinstaller/com.android.packageinstaller.PackageInstallerActivity' },
       { ...base, nodes: parseUiNodes(xml.replaceAll('安全模式提醒您', '风险提醒')) },
       { ...base, nodes: parseUiNodes(xml.replace('允许本次安装', '查看详情')) },
@@ -660,7 +658,7 @@ describe('strict Android system dialog profiles', () => {
       packageName: 'com.morphoinc.videopostprocessor',
       applicationLabel: 'Morpho VideoStabilizer',
       focusedWindowPackage: 'com.android.packageinstaller',
-      activeInstall: false,
+      phase: 'post-launch',
       nodes: parseUiNodes(fixture('honor-magic-os-real-install-warning.xml')),
     })
 
@@ -673,7 +671,7 @@ describe('strict Android system dialog profiles', () => {
       packageName: 'com.morphoinc.videopostprocessor',
       applicationLabel: 'Morpho VideoStabilizer',
       focusedWindowPackage: 'com.android.permissioncontroller',
-      activeInstall: true,
+      phase: 'runtime-permission',
       nodes: parseUiNodes(fixture('android-camera-permission.xml')),
     })
     expect(match?.action).toBe('allow-permission')
@@ -685,7 +683,7 @@ describe('strict Android system dialog profiles', () => {
       packageName: 'com.morphoinc.videopostprocessor',
       applicationLabel: 'Morpho VideoStabilizer',
       focusedWindowPackage: 'com.vivo.packageinstaller',
-      activeInstall: true,
+      phase: 'install',
       nodes: parseUiNodes(fixture('unrelated-dialog.xml')),
     })
     expect(match).toBeUndefined()
@@ -699,7 +697,7 @@ describe('strict Android system dialog profiles', () => {
       applicationLabel: 'Morpho VideoStabilizer',
       focusedWindowPackage: 'com.android.packageinstaller',
       focusedWindowComponent: 'com.android.packageinstaller/com.android.packageinstaller.PackageInstallerActivity',
-      activeInstall: true,
+      phase: 'install',
     }
 
     const unchecked = matchDialogAction([
@@ -740,7 +738,7 @@ describe('strict Android system dialog profiles', () => {
       applicationLabel: 'Morpho VideoStabilizer',
       focusedWindowPackage: 'com.android.packageinstaller',
       focusedWindowComponent: 'com.android.packageinstaller/com.android.packageinstaller.PackageInstallerActivity',
-      activeInstall: true,
+      phase: 'install',
       nodes: parseUiNodes(fixture('honor-x50-magic-os-9-package-installer.xml')),
     }
 
@@ -755,6 +753,37 @@ describe('strict Android system dialog profiles', () => {
     })
   })
 
+  it('keeps known block classification across phases without enabling install actions', () => {
+    const context = {
+      manufacturer: 'HONOR',
+      deviceModel: 'ALI-AN00',
+      packageName: 'com.morphoinc.videopostprocessor',
+      applicationLabel: 'Morpho VideoStabilizer',
+      focusedWindowPackage: 'com.android.packageinstaller',
+      focusedWindowComponent: 'com.android.packageinstaller/com.android.packageinstaller.PackageInstallerActivity',
+      phase: 'post-launch' as const,
+      nodes: parseUiNodes(fixture(
+        'honor-x50-magic-os-9-package-installer-recommendations-install.xml',
+      )),
+    }
+
+    const decision = evaluateDialogProfiles([
+      'honor-x50-magic-os-unreviewed-app-install-v1',
+      'honor-magic-os-unreviewed-app-block-v1',
+    ], context)
+
+    expect(decision).toMatchObject({
+      kind: 'block',
+      block: {
+        profileId: 'honor-magic-os-unreviewed-app-block-v1',
+        reason: 'honor-install-authorization-required',
+      },
+    })
+    expect(matchDialogAction([
+      'honor-x50-magic-os-unreviewed-app-install-v1',
+    ], context)).toBeUndefined()
+  })
+
   it('does not classify the Honor X50 block unless every strict identity guard is present', () => {
     const xml = fixture('honor-x50-magic-os-9-package-installer.xml')
     const base = {
@@ -763,13 +792,12 @@ describe('strict Android system dialog profiles', () => {
       applicationLabel: 'Morpho VideoStabilizer',
       focusedWindowPackage: 'com.android.packageinstaller',
       focusedWindowComponent: 'com.android.packageinstaller/com.android.packageinstaller.PackageInstallerActivity',
-      activeInstall: true,
+      phase: 'install',
       nodes: parseUiNodes(xml),
     }
     const guardedContexts = [
       { ...base, manufacturer: 'Xiaomi' },
       { ...base, packageName: 'com.example.unreviewed' },
-      { ...base, activeInstall: false },
       { ...base, focusedWindowPackage: 'com.android.permissioncontroller' },
       { ...base, focusedWindowComponent: 'com.android.packageinstaller/.OtherActivity' },
       { ...base, nodes: parseUiNodes(xml.replaceAll('安全模式提醒您', '风险提醒')) },

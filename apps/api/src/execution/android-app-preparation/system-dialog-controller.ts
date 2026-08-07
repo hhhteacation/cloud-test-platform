@@ -5,14 +5,17 @@ import { TaskExecutionError } from '../execution-errors.js'
 import type {
   AndroidPreparationDevice,
   DiagnosticScreenshotCapture,
-  HandledDialog,
+  DialogInteractionState,
 } from './contracts.js'
 import {
   evaluateDialogProfiles,
   KNOWN_DIALOG_WINDOW_PACKAGES,
-  type DialogBlockMatch,
+  type DialogBusinessPhase,
   type DialogTapTarget,
 } from './dialog-profiles.js'
+import type { DialogInspectionResult, InstallProgressSignature } from './dialog-state.js'
+
+export type { DialogInspectionResult } from './dialog-state.js'
 import {
   createInputAutomationDeniedError,
   isInputInjectionDenied,
@@ -22,8 +25,8 @@ import {
   extractFocusedWindowComponent,
   extractFocusedWindowPackage,
   extractUiXml,
-  nodeSearchText,
   parseUiNodes,
+  type UiNode,
 } from './ui-xml.js'
 
 export interface DialogInspectionOptions {
@@ -35,14 +38,8 @@ export interface DialogInspectionOptions {
   diagnosticsDirectory: string
   maxActions: number
   signal: AbortSignal
-  activeInstall?: boolean
+  phase: DialogBusinessPhase
 }
-
-export type DialogInspectionResult =
-  | { kind: 'none' }
-  | { kind: 'handled'; dialog: HandledDialog }
-  | { kind: 'manual-action-required'; block: DialogBlockMatch }
-  | { kind: 'unrecognized'; fingerprint: string }
 
 interface WindowSnapshot {
   focusedWindowPackage?: string
@@ -71,6 +68,67 @@ function resolveTapPoint(target: DialogTapTarget) {
   }
 }
 
+function buildDialogObservationFingerprint(
+  focusedWindowPackage: string,
+  focusedWindowComponent: string | undefined,
+  nodes: readonly UiNode[],
+) {
+  const nodeSignature = nodes.map((node) => [
+    node.index,
+    node.packageName,
+    node.resourceId,
+    node.className,
+    node.text,
+    node.contentDescription,
+    node.clickable,
+    node.enabled,
+    node.checkable,
+    node.checked,
+    node.bounds ? `${node.bounds.left},${node.bounds.top},${node.bounds.right},${node.bounds.bottom}` : '',
+  ].join('=')).join('|')
+  return [focusedWindowPackage, focusedWindowComponent ?? '', nodeSignature || 'no-nodes'].join(':')
+}
+
+function buildPageSignature(
+  pageKind: InstallProgressSignature['pageKind'],
+  focusedWindowPackage: string,
+  focusedWindowComponent: string | undefined,
+  pageFingerprint: string,
+): InstallProgressSignature {
+  return {
+    pageKind,
+    windowPackage: focusedWindowPackage,
+    windowComponent: focusedWindowComponent,
+    pageFingerprint,
+  }
+}
+
+function buildUnrecognizedSignature(
+  focusedWindowPackage: string,
+  focusedWindowComponent: string | undefined,
+  pageFingerprint: string,
+): InstallProgressSignature {
+  return buildPageSignature(
+    'unrecognized-page',
+    focusedWindowPackage,
+    focusedWindowComponent,
+    pageFingerprint,
+  )
+}
+
+function buildManualActionSignature(
+  focusedWindowPackage: string,
+  focusedWindowComponent: string | undefined,
+  pageFingerprint: string,
+): InstallProgressSignature {
+  return buildPageSignature(
+    'manual-action-required',
+    focusedWindowPackage,
+    focusedWindowComponent,
+    pageFingerprint,
+  )
+}
+
 /**
  * Strict UI Automator controller. It only clicks a node selected by a registered
  * profile and derives coordinates from that node's XML bounds.
@@ -80,16 +138,17 @@ function resolveTapPoint(target: DialogTapTarget) {
  * fallbacks, while profile matching remains the only path that can click.
  */
 export class SystemDialogController {
-  private readonly clickedNodeFingerprints = new Set<string>()
   private readonly trustedPackageCache = new Map<string, boolean>()
-  private actionCount = 0
 
   constructor(
     private readonly device: AndroidPreparationDevice,
     private readonly captureScreenshot: DiagnosticScreenshotCapture,
   ) {}
 
-  async inspectAndHandle(options: DialogInspectionOptions): Promise<DialogInspectionResult> {
+  async inspectAndHandle(
+    options: DialogInspectionOptions,
+    interactionState: DialogInteractionState,
+  ): Promise<DialogInspectionResult> {
     const window = await this.readWindowSnapshot(options.signal, 'INSTALL_DIALOG_UNRECOGNIZED')
     const focusedWindowPackage = window.focusedWindowPackage
     if (!focusedWindowPackage || !KNOWN_DIALOG_WINDOW_PACKAGES.has(focusedWindowPackage)) {
@@ -101,7 +160,11 @@ export class SystemDialogController {
     if (!xml || !nodes.length) {
       return {
         kind: 'unrecognized',
-        fingerprint: `${focusedWindowPackage}:ui-hierarchy-unavailable`,
+        signature: buildUnrecognizedSignature(
+          focusedWindowPackage,
+          window.focusedWindowComponent,
+          `${focusedWindowPackage}:ui-hierarchy-unavailable`,
+        ),
       }
     }
 
@@ -121,36 +184,41 @@ export class SystemDialogController {
       applicationLabel: options.applicationLabel,
       focusedWindowPackage,
       focusedWindowComponent: window.focusedWindowComponent,
-      activeInstall: options.activeInstall ?? false,
+      phase: options.phase,
       nodes,
     }
 
+    const pageFingerprint = buildDialogObservationFingerprint(
+      focusedWindowPackage,
+      window.focusedWindowComponent,
+      nodes,
+    )
     const decision = evaluateDialogProfiles(options.profileIds, matchContext)
     if (decision.kind === 'block') {
       await this.saveDiagnostics(options.diagnosticsDirectory, window.diagnosticsText, xml, options.signal)
-      return { kind: 'manual-action-required', block: decision.block }
+      return {
+        kind: 'manual-action-required',
+        block: decision.block,
+        signature: buildManualActionSignature(
+          focusedWindowPackage,
+          window.focusedWindowComponent,
+          pageFingerprint,
+        ),
+      }
     }
 
     if (decision.kind === 'none') {
-      const actionableText = nodes
-        .filter((node) => node.clickable)
-        .map(nodeSearchText)
-        .join('|')
       return {
         kind: 'unrecognized',
-        fingerprint: `${focusedWindowPackage}:${actionableText || 'no-actionable-node'}`,
+        signature: buildUnrecognizedSignature(
+          focusedWindowPackage,
+          window.focusedWindowComponent,
+          pageFingerprint,
+        ),
       }
     }
 
     const match = decision.action
-
-    if (this.actionCount >= options.maxActions) {
-      await this.saveDiagnostics(options.diagnosticsDirectory, window.diagnosticsText, xml, options.signal)
-      throw new TaskExecutionError(
-        `安装弹窗自动操作已达到上限 ${options.maxActions} 次`,
-        'INSTALL_DIALOG_UNRECOGNIZED',
-      )
-    }
 
     const tapPoint = resolveTapPoint(match.tapTarget)
     const fingerprint = [
@@ -160,15 +228,51 @@ export class SystemDialogController {
       match.node.resourceId,
       match.node.text,
       match.node.contentDescription,
+      `enabled=${match.node.enabled}`,
+      `checkable=${match.node.checkable}`,
+      `checked=${match.node.checked}`,
       JSON.stringify(match.node.bounds),
       match.tapTarget.kind,
       tapPoint.x,
       tapPoint.y,
     ].join(':')
-    if (this.clickedNodeFingerprints.has(fingerprint)) {
+    const progressSignature: InstallProgressSignature = {
+      pageKind: 'recognized-action',
+      windowPackage: focusedWindowPackage,
+      windowComponent: window.focusedWindowComponent,
+      profileId: match.profileId,
+      action: match.action,
+      pageFingerprint,
+      target: {
+        resourceId: match.node.resourceId,
+        text: match.node.text,
+        contentDescription: match.node.contentDescription,
+        enabled: match.node.enabled,
+        checkable: match.node.checkable,
+        checked: match.node.checked,
+        bounds: match.node.bounds
+          ? `${match.node.bounds.left},${match.node.bounds.top},${match.node.bounds.right},${match.node.bounds.bottom}`
+          : undefined,
+        tapX: tapPoint.x,
+        tapY: tapPoint.y,
+      },
+    }
+    if (interactionState.hasSeenAction(fingerprint)) {
+      // A repeated action target means that the previous tap has not yet been
+      // verified as a state transition. It is not, by itself, an unknown
+      // page or a terminal installation failure. The coordinator owns the
+      // grace/timeout decision; this module must not preempt it.
+      return {
+        kind: 'waiting',
+        signature: progressSignature,
+        reason: 'action-awaiting-transition',
+      }
+    }
+
+    if (!interactionState.canPerformAction(options.maxActions)) {
       await this.saveDiagnostics(options.diagnosticsDirectory, window.diagnosticsText, xml, options.signal)
       throw new TaskExecutionError(
-        `同一个安装弹窗节点重复出现，平台已停止自动点击：${match.profileId}`,
+        `安装弹窗自动操作已达到上限 ${options.maxActions} 次`,
         'INSTALL_DIALOG_UNRECOGNIZED',
       )
     }
@@ -191,11 +295,11 @@ export class SystemDialogController {
       )
       throw createInputAutomationDeniedError(options.manufacturer)
     }
-    this.clickedNodeFingerprints.add(fingerprint)
-    this.actionCount += 1
+    interactionState.recordAction(fingerprint)
 
     return {
       kind: 'handled',
+      signature: progressSignature,
       dialog: {
         profileId: match.profileId,
         action: match.action,

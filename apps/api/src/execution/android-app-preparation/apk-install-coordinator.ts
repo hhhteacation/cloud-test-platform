@@ -1,11 +1,13 @@
 import { buildInstallPlan, type ApkDialogAutomationConfig } from '../../apk-protocols.js'
 import { TaskExecutionError } from '../execution-errors.js'
 import { delay } from '../file-utils.js'
+import { createDialogInteractionState } from './contracts.js'
 import type {
   AndroidPreparationDevice,
   HandledDialog,
   PreparationEvent,
 } from './contracts.js'
+import { DialogProgressTracker } from './dialog-progress.js'
 import { SystemDialogController, type DialogInspectionOptions } from './system-dialog-controller.js'
 
 interface InstallRequest {
@@ -115,8 +117,8 @@ export class ApkInstallCoordinator {
     const installController = new AbortController()
     const unlinkAbort = linkAbortSignal(request.signal, installController)
     const handledDialogs: HandledDialog[] = []
-    let repeatedUnknownFingerprint: string | undefined
-    let repeatedUnknownSince = 0
+    const interactionState = createDialogInteractionState()
+    const dialogProgress = new DialogProgressTracker()
     const unrecognizedGraceMs = automation.unrecognizedGraceMs ?? 15_000
 
     const installOutcome = this.device.run(
@@ -135,15 +137,14 @@ export class ApkInstallCoordinator {
       diagnosticsDirectory: request.diagnosticsDirectory,
       maxActions: automation.maxActions,
       signal: installController.signal,
-      activeInstall: true,
+      phase: 'install',
     }
 
     const acceptRecognizedInspection = (
       inspection: Awaited<ReturnType<SystemDialogController['inspectAndHandle']>>,
     ) => {
       if (inspection.kind === 'handled') {
-        repeatedUnknownFingerprint = undefined
-        repeatedUnknownSince = 0
+        dialogProgress.reset()
         handledDialogs.push(inspection.dialog)
         request.onEvent({
           phase: 'handling_install_dialog',
@@ -153,8 +154,7 @@ export class ApkInstallCoordinator {
         return true
       }
       if (inspection.kind === 'manual-action-required') {
-        repeatedUnknownFingerprint = undefined
-        repeatedUnknownSince = 0
+        dialogProgress.reset()
         request.onEvent({
           phase: 'handling_install_dialog',
           progress: 17,
@@ -162,6 +162,13 @@ export class ApkInstallCoordinator {
         })
         installController.abort()
         throw new TaskExecutionError(inspection.block.summary, 'INSTALL_USER_ACTION_REQUIRED')
+      }
+      if (inspection.kind === 'waiting') {
+        request.onEvent({
+          phase: 'handling_install_dialog',
+          progress: 17,
+          message: '上一次安装器动作尚未观察到页面迁移，等待下一次状态观察',
+        })
       }
       return false
     }
@@ -178,38 +185,35 @@ export class ApkInstallCoordinator {
           return handledDialogs
         }
 
-        const inspection = await this.dialogs.inspectAndHandle(inspectionOptions)
+        const inspection = await this.dialogs.inspectAndHandle(inspectionOptions, interactionState)
         if (acceptRecognizedInspection(inspection)) continue
 
-        if (inspection.kind === 'unrecognized') {
-          const now = Date.now()
-          if (inspection.fingerprint !== repeatedUnknownFingerprint) {
-            repeatedUnknownFingerprint = inspection.fingerprint
-            repeatedUnknownSince = now
+        if (inspection.kind === 'unrecognized' || inspection.kind === 'waiting') {
+          const progress = dialogProgress.observe(inspection)
+          if (progress.changed) {
             request.onEvent({
               phase: 'handling_install_dialog',
               progress: 16,
-              message: '安装器界面仍在加载或安全扫描，等待严格白名单特征稳定',
+              message: inspection.kind === 'waiting'
+                ? '上一次安装器动作尚未观察到页面迁移，等待严格白名单特征稳定'
+                : '安装器界面仍在加载或安全扫描，等待严格白名单特征稳定',
             })
           }
-          if (now - repeatedUnknownSince >= unrecognizedGraceMs) {
+          if (progress.elapsedMs >= unrecognizedGraceMs) {
             // The timeout diagnostics used to capture a newer frame after the
             // unrecognized decision. On slowly rendering OEM installers this
             // could save a fully recognizable page while still reporting the
             // stale frame as INSTALL_DIALOG_UNRECOGNIZED. Reclassify once at
             // the boundary before committing to the failure.
-            const finalInspection = await this.dialogs.inspectAndHandle(inspectionOptions)
+            const finalInspection = await this.dialogs.inspectAndHandle(inspectionOptions, interactionState)
             if (acceptRecognizedInspection(finalInspection)) continue
             if (finalInspection.kind === 'none') {
-              repeatedUnknownFingerprint = undefined
-              repeatedUnknownSince = 0
+              dialogProgress.reset()
               continue
             }
-            if (finalInspection.kind === 'unrecognized'
-              && finalInspection.fingerprint !== inspection.fingerprint) {
-              repeatedUnknownFingerprint = finalInspection.fingerprint
-              repeatedUnknownSince = Date.now()
-              continue
+            if (finalInspection.kind === 'unrecognized' || finalInspection.kind === 'waiting') {
+              const finalProgress = dialogProgress.observe(finalInspection)
+              if (finalProgress.changed) continue
             }
 
             await this.dialogs.saveTimeoutDiagnostics(inspectionOptions)
@@ -220,8 +224,7 @@ export class ApkInstallCoordinator {
             )
           }
         } else {
-          repeatedUnknownFingerprint = undefined
-          repeatedUnknownSince = 0
+          dialogProgress.reset()
         }
       }
 

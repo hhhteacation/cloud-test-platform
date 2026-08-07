@@ -1,6 +1,8 @@
 import type { UiNode } from './ui-xml.js'
 import { nodeSearchText } from './ui-xml.js'
 
+export type DialogBusinessPhase = 'install' | 'runtime-permission' | 'post-launch'
+
 export type DialogActionKind =
   | 'confirm-checkbox'
   | 'continue-install'
@@ -41,7 +43,7 @@ export interface DialogMatchContext {
   focusedWindowPackage?: string
   focusedWindowComponent?: string
   nodes: UiNode[]
-  activeInstall: boolean
+  phase: DialogBusinessPhase
 }
 
 interface DialogProfileDefinition {
@@ -56,8 +58,8 @@ interface DialogProfileDefinition {
   requiredResourceIds?: string[]
   targets: DialogTargetDefinition[]
   action: Exclude<DialogActionKind, 'confirm-checkbox'>
-  allowActiveInstallIdentity?: boolean
-  activeInstallOnly?: true
+  allowedPhases: readonly DialogBusinessPhase[]
+  allowInstallContextIdentity?: boolean
   allowUncheckedConfirmation?: boolean
   uncheckedConfirmation?: {
     resourceIds: string[]
@@ -86,7 +88,6 @@ interface DialogBlockProfileDefinition {
   allowedWindowComponents: RegExp[]
   evidenceVariants: DialogBlockEvidenceVariant[]
   requireVisibleApplicationIdentity?: boolean
-  activeInstallOnly: true
 }
 
 interface DialogTargetDefinition {
@@ -104,6 +105,7 @@ interface DialogTargetDefinition {
 
 const VIVO_PROFILE: DialogProfileDefinition = {
   id: 'vivo-package-installer-v1',
+  allowedPhases: ['install'],
   manufacturers: /vivo|bbk/i,
   allowedWindowPackages: [
     'com.android.packageinstaller',
@@ -124,6 +126,7 @@ const VIVO_PROFILE: DialogProfileDefinition = {
 
 const HONOR_PROFILE: DialogProfileDefinition = {
   id: 'honor-package-installer-v1',
+  allowedPhases: ['install'],
   manufacturers: /honor|huawei|荣耀|华为/i,
   allowedWindowPackages: [
     'com.android.packageinstaller',
@@ -152,7 +155,7 @@ const HONOR_PROFILE: DialogProfileDefinition = {
     },
   ],
   action: 'continue-install',
-  allowActiveInstallIdentity: true,
+  allowInstallContextIdentity: true,
   uncheckedConfirmation: {
     resourceIds: [
       'com.hihonor.systemmanager:id/confirm',
@@ -176,6 +179,7 @@ const HONOR_PROFILE: DialogProfileDefinition = {
  */
 const HONOR_X50_UNKNOWN_SOURCE_WARNING_PROFILE: DialogProfileDefinition = {
   id: 'honor-x50-unknown-source-warning-v1',
+  allowedPhases: ['install'],
   manufacturers: /honor|荣耀/i,
   deviceModels: /^ALI-AN00$/i,
   packageNames: ['com.morphoinc.videopostprocessor'],
@@ -202,8 +206,7 @@ const HONOR_X50_UNKNOWN_SOURCE_WARNING_PROFILE: DialogProfileDefinition = {
     requireEnabled: true,
   }],
   action: 'continue-install',
-  allowActiveInstallIdentity: true,
-  activeInstallOnly: true,
+  allowInstallContextIdentity: true,
 }
 
 /**
@@ -213,6 +216,7 @@ const HONOR_X50_UNKNOWN_SOURCE_WARNING_PROFILE: DialogProfileDefinition = {
  */
 const HONOR_X50_ICP_NOTICE_PROFILE: DialogProfileDefinition = {
   id: 'honor-x50-icp-notice-v1',
+  allowedPhases: ['install'],
   manufacturers: /honor|荣耀/i,
   deviceModels: /^ALI-AN00$/i,
   packageNames: ['com.morphoinc.videopostprocessor'],
@@ -243,8 +247,7 @@ const HONOR_X50_ICP_NOTICE_PROFILE: DialogProfileDefinition = {
     requireEnabled: true,
   }],
   action: 'acknowledge-install-notice',
-  allowActiveInstallIdentity: true,
-  activeInstallOnly: true,
+  allowInstallContextIdentity: true,
 }
 
 /**
@@ -257,6 +260,7 @@ const HONOR_X50_ICP_NOTICE_PROFILE: DialogProfileDefinition = {
  */
 const HONOR_SAFE_MODE_INSTALL_SHEET_PROFILE: DialogProfileDefinition = {
   id: 'honor-safe-mode-install-sheet-v1',
+  allowedPhases: ['install'],
   manufacturers: /honor|荣耀/i,
   packageNames: ['com.morphoinc.videopostprocessor'],
   allowedWindowPackages: ['com.android.packageinstaller'],
@@ -288,7 +292,7 @@ const HONOR_SAFE_MODE_INSTALL_SHEET_PROFILE: DialogProfileDefinition = {
     },
   }],
   action: 'allow-one-time-install',
-  allowActiveInstallIdentity: true,
+  allowInstallContextIdentity: true,
   allowUncheckedConfirmation: false,
 }
 
@@ -339,7 +343,6 @@ const HONOR_MAGIC_OS_UNREVIEWED_APP_BLOCK_PROFILE: DialogBlockProfileDefinition 
       ],
     },
   ],
-  activeInstallOnly: true,
 }
 
 /**
@@ -352,6 +355,7 @@ const HONOR_MAGIC_OS_UNREVIEWED_APP_BLOCK_PROFILE: DialogBlockProfileDefinition 
  */
 const HONOR_X50_MAGIC_OS_UNREVIEWED_APP_INSTALL_PROFILE: DialogProfileDefinition = {
   id: 'honor-x50-magic-os-unreviewed-app-install-v1',
+  allowedPhases: ['install'],
   manufacturers: /honor|荣耀/i,
   deviceModels: /^ALI-AN00$/i,
   packageNames: ['com.morphoinc.videopostprocessor'],
@@ -391,7 +395,6 @@ const HONOR_X50_MAGIC_OS_UNREVIEWED_APP_INSTALL_PROFILE: DialogProfileDefinition
     requireEnabled: true,
   }],
   action: 'continue-install',
-  activeInstallOnly: true,
   supersedesBlockProfileIds: ['honor-magic-os-unreviewed-app-block-v1'],
 }
 
@@ -405,6 +408,7 @@ const HONOR_X50_MAGIC_OS_UNREVIEWED_APP_INSTALL_PROFILE: DialogProfileDefinition
  */
 const XIAOMI_HYPEROS_PACKAGE_INSTALLER_PROFILE: DialogProfileDefinition = {
   id: 'xiaomi-hyperos-package-installer-v1',
+  allowedPhases: ['install'],
   manufacturers: /xiaomi|redmi|poco|小米|红米/i,
   packageNames: ['com.morphoinc.videopostprocessor'],
   allowedWindowPackages: ['com.miui.securitycenter'],
@@ -444,6 +448,7 @@ const XIAOMI_HYPEROS_PACKAGE_INSTALLER_PROFILE: DialogProfileDefinition = {
  */
 const OPLUS_PROFILE: DialogProfileDefinition = {
   id: 'oplus-package-installer-v1',
+  allowedPhases: ['install'],
   manufacturers: /oppo|oneplus|realme|oplus|一加|真我/i,
   allowedWindowPackages: [
     'com.oplus.appdetail',
@@ -468,6 +473,7 @@ const OPLUS_PROFILE: DialogProfileDefinition = {
  */
 const OPLUS_STORAGE_COMPATIBILITY_PROFILE: DialogProfileDefinition = {
   id: 'oplus-storage-compatibility-warning-v1',
+  allowedPhases: ['post-launch'],
   manufacturers: /oppo|oneplus|realme|oplus|一加|真我/i,
   allowedWindowPackages: ['com.android.permissioncontroller'],
   allowedWindowComponents: [
@@ -491,6 +497,7 @@ const OPLUS_STORAGE_COMPATIBILITY_PROFILE: DialogProfileDefinition = {
 
 const ANDROID_PERMISSION_PROFILE: DialogProfileDefinition = {
   id: 'android-runtime-permission-v1',
+  allowedPhases: ['runtime-permission'],
   allowedWindowPackages: [
     'com.android.permissioncontroller',
     'com.google.android.permissioncontroller',
@@ -556,14 +563,14 @@ function hasApplicationIdentity(
   const allText = context.nodes.map(nodeSearchText).join('\n')
   const identityVisibleInUi = allText.includes(context.applicationLabel)
     || allText.includes(context.packageName)
-  return identityVisibleInUi || Boolean(profile.allowActiveInstallIdentity && context.activeInstall)
+  return identityVisibleInUi || Boolean(profile.allowInstallContextIdentity && context.phase === 'install')
 }
 
 function resolveDialogScope(context: DialogMatchContext): DialogProfileScope | undefined {
   if (/honor|荣耀/i.test(context.manufacturer)
     && /^ALI-AN00$/i.test(context.deviceModel ?? '')
     && context.packageName === 'com.morphoinc.videopostprocessor'
-    && context.activeInstall
+    && context.phase === 'install'
     && context.focusedWindowPackage === 'com.android.packageinstaller'
     && context.focusedWindowComponent
     && /^com\.android\.packageinstaller\/com\.android\.packageinstaller\.PackageInstallerActivity$/
@@ -577,7 +584,7 @@ function profileMatches(profile: DialogProfileDefinition, context: DialogMatchCo
   const scope = resolveDialogScope(context)
   if (scope && profile.excludedScopes?.includes(scope)) return false
   if (profile.manufacturers && !profile.manufacturers.test(context.manufacturer)) return false
-  if (profile.activeInstallOnly && !context.activeInstall) return false
+  if (!profile.allowedPhases.includes(context.phase)) return false
   if (profile.deviceModels
     && (!context.deviceModel || !profile.deviceModels.test(context.deviceModel))) return false
   if (profile.packageNames && !profile.packageNames.includes(context.packageName)) return false
@@ -624,7 +631,6 @@ export function matchDialogBlock(
     if (!enabledProfileIds.includes(profile.id)) continue
     if (!profile.manufacturers.test(context.manufacturer)) continue
     if (!profile.packageNames.includes(context.packageName)) continue
-    if (profile.activeInstallOnly && !context.activeInstall) continue
     if (!context.focusedWindowPackage
       || !profile.allowedWindowPackages.includes(context.focusedWindowPackage)) continue
     if (!context.focusedWindowComponent
@@ -783,10 +789,21 @@ export function evaluateDialogProfiles(
   return action ? { kind: 'action', action } : { kind: 'none' }
 }
 
-export function hasDialogProfileForManufacturer(
+export function hasDialogObservationProfileForManufacturer(
   enabledProfileIds: readonly string[],
   manufacturer: string,
+  phase: DialogBusinessPhase,
 ) {
-  return DIALOG_PROFILES.some((profile) => enabledProfileIds.includes(profile.id)
+  const hasActionProfile = DIALOG_PROFILES.some((profile) =>
+    enabledProfileIds.includes(profile.id)
+    && profile.allowedPhases.includes(phase)
     && (!profile.manufacturers || profile.manufacturers.test(manufacturer)))
+  if (hasActionProfile) return true
+
+  // Block profiles classify a known unsafe/manual page. Their classification is
+  // phase-independent even though every phase coordinator owns a different
+  // terminal decision and must never execute an install action outside install.
+  return DIALOG_BLOCK_PROFILES.some((profile) =>
+    enabledProfileIds.includes(profile.id)
+    && profile.manufacturers.test(manufacturer))
 }

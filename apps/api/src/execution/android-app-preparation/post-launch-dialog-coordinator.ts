@@ -1,8 +1,10 @@
 import type { ApkDialogAutomationConfig } from '../../apk-protocols.js'
 import { TaskExecutionError } from '../execution-errors.js'
 import { delay } from '../file-utils.js'
+import { createDialogInteractionState } from './contracts.js'
 import type { HandledDialog, PreparationEvent } from './contracts.js'
-import { hasDialogProfileForManufacturer } from './dialog-profiles.js'
+import { hasDialogObservationProfileForManufacturer } from './dialog-profiles.js'
+import { DialogProgressTracker } from './dialog-progress.js'
 import { SystemDialogController } from './system-dialog-controller.js'
 
 interface PostLaunchDialogRequest {
@@ -26,23 +28,28 @@ export class PostLaunchDialogCoordinator {
   async handleOptionalDialog(request: PostLaunchDialogRequest): Promise<HandledDialog[]> {
     const automation = request.automation
     if (!automation || automation.mode !== 'strict-whitelist') return []
-    if (!hasDialogProfileForManufacturer(automation.profileIds, request.manufacturer)) return []
+    if (!hasDialogObservationProfileForManufacturer(
+      automation.profileIds,
+      request.manufacturer,
+      'post-launch',
+    )) return []
 
+    const interactionState = createDialogInteractionState()
     const startedAt = Date.now()
     const unknownGraceMs = automation.unrecognizedGraceMs ?? 1_500
-    let unknownFingerprint: string | undefined
-    let unknownSince = 0
+    const dialogProgress = new DialogProgressTracker()
 
     while (Date.now() - startedAt < automation.timeoutMs) {
       const inspection = await this.dialogs.inspectAndHandle({
         manufacturer: request.manufacturer,
         packageName: request.packageName,
         applicationLabel: request.applicationLabel,
+        phase: 'post-launch',
         profileIds: automation.profileIds,
         diagnosticsDirectory: request.diagnosticsDirectory,
         maxActions: automation.maxActions,
         signal: request.signal,
-      })
+      }, interactionState)
 
       if (inspection.kind === 'handled') {
         request.onEvent({
@@ -53,16 +60,26 @@ export class PostLaunchDialogCoordinator {
         return [inspection.dialog]
       }
 
-      if (inspection.kind === 'unrecognized') {
-        const now = Date.now()
-        if (unknownFingerprint !== inspection.fingerprint) {
-          unknownFingerprint = inspection.fingerprint
-          unknownSince = now
-        } else if (now - unknownSince >= unknownGraceMs) {
+      if (inspection.kind === 'manual-action-required') {
+        request.onEvent({
+          phase: 'handling_app_dialog',
+          progress: 24,
+          message: inspection.block.summary,
+        })
+        throw new TaskExecutionError(
+          inspection.block.summary,
+          'POST_LAUNCH_DIALOG_MANUAL_ACTION_REQUIRED',
+        )
+      }
+
+      if (inspection.kind === 'unrecognized' || inspection.kind === 'waiting') {
+        const progress = dialogProgress.observe(inspection)
+        if (progress.elapsedMs >= unknownGraceMs) {
           await this.dialogs.saveTimeoutDiagnostics({
             manufacturer: request.manufacturer,
             packageName: request.packageName,
             applicationLabel: request.applicationLabel,
+        phase: 'post-launch',
             profileIds: automation.profileIds,
             diagnosticsDirectory: request.diagnosticsDirectory,
             maxActions: automation.maxActions,
@@ -74,8 +91,7 @@ export class PostLaunchDialogCoordinator {
           )
         }
       } else {
-        unknownFingerprint = undefined
-        unknownSince = 0
+        dialogProgress.reset()
       }
 
       await delay(automation.pollIntervalMs, request.signal)

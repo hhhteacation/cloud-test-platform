@@ -32,6 +32,36 @@ export interface HandledDialog {
   timestamp: string
 }
 
+/**
+ * Per-phase interaction history. The coordinator that owns a business phase
+ * creates and scopes this state; dialog inspection must not retain it
+ * implicitly across install, permission, or post-launch phases.
+ *
+ * The mutable representation stays behind this small seam so callers cannot
+ * accidentally reset or increment controller state themselves.
+ */
+export class DialogInteractionState {
+  private readonly clickedActionFingerprints = new Set<string>()
+  private actionCount = 0
+
+  canPerformAction(maxActions: number) {
+    return this.actionCount < maxActions
+  }
+
+  hasSeenAction(fingerprint: string) {
+    return this.clickedActionFingerprints.has(fingerprint)
+  }
+
+  recordAction(fingerprint: string) {
+    this.clickedActionFingerprints.add(fingerprint)
+    this.actionCount += 1
+  }
+}
+
+export function createDialogInteractionState() {
+  return new DialogInteractionState()
+}
+
 export interface AndroidAppPreparationReceipt {
   packageName: string
   cleanInstalled: boolean

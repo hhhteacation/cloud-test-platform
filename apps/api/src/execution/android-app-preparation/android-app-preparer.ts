@@ -49,8 +49,12 @@ export class DefaultAndroidAppPreparer implements AndroidAppPreparer {
       ?? new AdbDeviceClient(config.adbPath, request.deviceSerial)
     const captureScreenshot = this.dependencies.captureScreenshot
       ?? this.createScreenshotCapture(request.deviceSerial)
-    const dialogs = new SystemDialogController(device, captureScreenshot)
     const readiness = new AndroidDeviceReadiness(device)
+    // The controller is a stateless observation/action adapter. Temporal
+    // interaction state belongs to each phase coordinator, so one adapter can
+    // safely serve install, runtime-permission, and post-launch phases without
+    // leaking action counts or fingerprints between them.
+    const dialogs = new SystemDialogController(device, captureScreenshot)
     const installer = new ApkInstallCoordinator(device, dialogs)
     const permissions = new RuntimePermissionManager(device)
     const permissionDialogs = new RuntimePermissionDialogCoordinator(permissions, dialogs)
@@ -166,24 +170,23 @@ export class DefaultAndroidAppPreparer implements AndroidAppPreparer {
         }
       } else if (automation?.mode === 'strict-whitelist'
         && automation.profileIds.includes('android-runtime-permission-v1')) {
-        const runtimeDialog = await dialogs.inspectAndHandle({
+        const runtimeDialogs = await permissionDialogs.handleResidualDialog({
           manufacturer: request.deviceManufacturer,
           packageName: request.protocol.packageName,
           applicationLabel: applicationLabel(request.protocol.packageName),
-          profileIds: ['android-runtime-permission-v1'],
           diagnosticsDirectory: request.diagnosticsDirectory,
-          maxActions: automation.maxActions,
+          automation,
           signal: request.signal,
+          onEvent: request.onEvent,
         })
-        if (runtimeDialog.kind === 'handled') {
-          handledDialogs.push(runtimeDialog.dialog)
-          request.onEvent({
-            phase: 'granting_permissions',
-            progress: 22,
-            message: `厂商系统仍显示权限弹窗，已通过 ${runtimeDialog.dialog.profileId} 自动处理`,
-          })
+        if (runtimeDialogs.length > 0) {
+          handledDialogs.push(...runtimeDialogs)
           await delay(300, request.signal)
-          await permissions.verifyAll(request.protocol.packageName, requestedPermissions, request.signal)
+          grantedPermissions = await permissions.verifyAll(
+            request.protocol.packageName,
+            requestedPermissions,
+            request.signal,
+          )
         }
       }
 

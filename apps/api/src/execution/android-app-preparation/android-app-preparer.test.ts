@@ -54,6 +54,52 @@ class PreparationFakeDevice implements AndroidPreparationDevice {
   }
 }
 
+class ResidualUnknownRuntimeDialogDevice extends PreparationFakeDevice {
+  private activityStarted = false
+
+  override async run(args: string[]): Promise<ProcessResult> {
+    const command = args.join(' ')
+    if (command.startsWith('shell pm grant ')) {
+      this.calls.push(args)
+      return { code: 0, stdout: 'Success', stderr: '' }
+    }
+    if (command === 'shell dumpsys package com.morphoinc.videopostprocessor') {
+      this.calls.push(args)
+      return {
+        code: 0,
+        stdout: '\n          runtime permissions:\n            android.permission.CAMERA: granted=true\n            android.permission.RECORD_AUDIO: granted=true\n        ',
+        stderr: '',
+      }
+    }
+    if (command === 'shell am start com.morphoinc.videopostprocessor/.MainActivity') {
+      this.activityStarted = true
+      this.calls.push(args)
+      return { code: 0, stdout: 'Starting: Intent', stderr: '' }
+    }
+    if (command === 'shell dumpsys window windows' && this.activityStarted) {
+      this.calls.push(args)
+      return {
+        code: 0,
+        stdout: 'mCurrentFocus=Window{abc u0 com.android.permissioncontroller/com.android.permissioncontroller.permission.ui.GrantPermissionsActivity}',
+        stderr: '',
+      }
+    }
+    if (command === 'exec-out uiautomator dump /dev/tty' && this.activityStarted) {
+      this.calls.push(args)
+      return {
+        code: 0,
+        stdout: '<hierarchy><node index=\"0\" text=\"Unexpected permission screen\" resource-id=\"unknown:id/root\" class=\"android.widget.FrameLayout\" package=\"com.android.permissioncontroller\" clickable=\"false\" enabled=\"true\" bounds=\"[0,0][1080,2400]\" /></hierarchy>',
+        stderr: '',
+      }
+    }
+    if (command === 'shell pm path com.android.permissioncontroller') {
+      this.calls.push(args)
+      return { code: 0, stdout: 'package:/system/priv-app/PermissionController/PermissionController.apk', stderr: '' }
+    }
+    return super.run(args)
+  }
+}
+
 class XiaomiInputDeniedPreparationDevice extends PreparationFakeDevice {
   constructor() {
     super()
@@ -143,7 +189,84 @@ class OplusPermissionFallbackDevice implements AndroidPreparationDevice {
   }
 }
 
+class HonorPostLaunchManualActionDevice extends PreparationFakeDevice {
+  private activityStarted = false
+
+  override async isPackageInstalled() {
+    return true
+  }
+
+  override async run(args: string[]): Promise<ProcessResult> {
+    const command = args.join(' ')
+    if (command === 'shell am start com.morphoinc.videopostprocessor/.MainActivity') {
+      this.activityStarted = true
+      this.calls.push(args)
+      return { code: 0, stdout: 'Starting: Intent', stderr: '' }
+    }
+    if (command === 'shell dumpsys window windows' && this.activityStarted) {
+      this.calls.push(args)
+      return {
+        code: 0,
+        stdout: 'mCurrentFocus=Window{abc u0 com.android.packageinstaller/com.android.packageinstaller.PackageInstallerActivity}',
+        stderr: '',
+      }
+    }
+    if (command === 'exec-out uiautomator dump /dev/tty' && this.activityStarted) {
+      this.calls.push(args)
+      return { code: 0, stdout: fixture('honor-x50-magic-os-9-package-installer-recommendations.xml'), stderr: '' }
+    }
+    if (command === 'shell pm path com.android.packageinstaller') {
+      this.calls.push(args)
+      return { code: 0, stdout: 'package:/system/priv-app/PackageInstaller/PackageInstaller.apk', stderr: '' }
+    }
+    return super.run(args)
+  }
+}
+
 describe('DefaultAndroidAppPreparer', () => {
+  it('does not reclassify an unrecognized residual permission dialog as a post-launch result', async () => {
+    const base = findApkExecutionProtocol('com.morphoinc.videopostprocessor')!
+    const protocol: ApkExecutionProtocol = {
+      ...base,
+      install: {
+        ...base.install,
+        dialogAutomation: {
+          ...base.install.dialogAutomation!,
+          timeoutMs: 30,
+          pollIntervalMs: 1,
+          unrecognizedGraceMs: 0,
+        },
+      },
+      launch: {
+        ...base.launch,
+        warmupBeforeTransferMs: 1,
+        postLaunchDialogAutomation: {
+          mode: 'strict-whitelist',
+          profileIds: ['oplus-storage-compatibility-warning-v1'],
+          timeoutMs: 1,
+          pollIntervalMs: 1,
+          maxActions: 1,
+          unrecognizedGraceMs: 0,
+        },
+      },
+    }
+    const preparer = new DefaultAndroidAppPreparer({
+      createDevice: () => new ResidualUnknownRuntimeDialogDevice(),
+      captureScreenshot: async () => undefined,
+    })
+
+    await expect(preparer.prepareApplication({
+      deviceSerial: 'vivo-residual-runtime-dialog',
+      deviceManufacturer: 'vivo',
+      deviceModel: 'V2324A',
+      apkPath: '/tmp/morpho.apk',
+      protocol,
+      diagnosticsDirectory: '/tmp/not-used',
+      signal: new AbortController().signal,
+      onEvent: () => undefined,
+    })).rejects.toMatchObject({ code: 'RUNTIME_PERMISSION_DIALOG_UNRECOGNIZED' })
+  })
+
   it('falls back to PowerManager and continues installation when Xiaomi wake input is denied', async () => {
     const protocol = findApkExecutionProtocol('com.morphoinc.videopostprocessor')!
     const device = new XiaomiInputDeniedPreparationDevice()
@@ -284,6 +407,94 @@ describe('DefaultAndroidAppPreparer', () => {
     expect(events).toContain('相机权限验证通过')
     expect(events).toContain('录音权限验证通过')
     expect(requestedSerials).toEqual(['serial-1'])
+  })
+
+  it('does not silently continue when post-launch observes an explicit manual-action block', async () => {
+    const base = findApkExecutionProtocol('com.morphoinc.videopostprocessor')!
+    const protocol: ApkExecutionProtocol = {
+      ...base,
+      install: {
+        ...base.install,
+        dialogAutomation: {
+          ...base.install.dialogAutomation!,
+          profileIds: ['honor-package-installer-v1'],
+          timeoutMs: 100,
+          pollIntervalMs: 1,
+        },
+      },
+      launch: {
+        ...base.launch,
+        warmupBeforeTransferMs: 1,
+        postLaunchDialogAutomation: {
+          mode: 'strict-whitelist',
+          profileIds: ['honor-magic-os-unreviewed-app-block-v1'],
+          timeoutMs: 100,
+          pollIntervalMs: 1,
+          maxActions: 1,
+          unrecognizedGraceMs: 10,
+        },
+      },
+    }
+    const device = new HonorPostLaunchManualActionDevice()
+    const preparer = new DefaultAndroidAppPreparer({
+      createDevice: () => device,
+      captureScreenshot: async () => undefined,
+    })
+
+    await expect(preparer.prepareApplication({
+      deviceSerial: 'honor-post-launch-manual',
+      deviceManufacturer: 'HONOR',
+      deviceModel: 'ALI-AN00',
+      apkPath: '/tmp/morpho.apk',
+      protocol,
+      diagnosticsDirectory: '/tmp/not-used',
+      signal: new AbortController().signal,
+      onEvent: () => undefined,
+    })).rejects.toMatchObject({
+      code: 'POST_LAUNCH_DIALOG_MANUAL_ACTION_REQUIRED',
+    })
+  })
+
+  it('does not carry action limits from runtime permission handling into post-launch handling', async () => {
+    const base = findApkExecutionProtocol('com.morphoinc.videopostprocessor')!
+    const protocol: ApkExecutionProtocol = {
+      ...base,
+      install: {
+        ...base.install,
+        dialogAutomation: {
+          ...base.install.dialogAutomation!,
+          maxActions: 1,
+        },
+      },
+      launch: {
+        ...base.launch,
+        postLaunchDialogAutomation: {
+          ...base.launch.postLaunchDialogAutomation!,
+          maxActions: 1,
+        },
+      },
+    }
+    const device = new OplusPermissionFallbackDevice()
+    const preparer = new DefaultAndroidAppPreparer({
+      createDevice: () => device,
+      captureScreenshot: async () => undefined,
+    })
+
+    await expect(preparer.prepareApplication({
+      deviceSerial: 'oplus-stage-isolation',
+      deviceManufacturer: 'OPPO',
+      deviceModel: 'PJV110',
+      apkPath: '/tmp/morpho.apk',
+      protocol,
+      diagnosticsDirectory: '/tmp/not-used',
+      signal: new AbortController().signal,
+      onEvent: () => undefined,
+    })).resolves.toMatchObject({
+      handledDialogs: expect.arrayContaining([
+        expect.objectContaining({ profileId: 'android-runtime-permission-v1' }),
+        expect.objectContaining({ profileId: 'oplus-storage-compatibility-warning-v1' }),
+      ]),
+    })
   })
 
   it('falls back to the strict permission dialog when ColorOS forbids shell pm grant', async () => {

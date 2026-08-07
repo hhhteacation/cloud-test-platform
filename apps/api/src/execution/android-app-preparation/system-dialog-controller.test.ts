@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { ProcessResult } from '../../process.js'
 import { TaskExecutionError } from '../execution-errors.js'
+import { createDialogInteractionState } from './contracts.js'
 import type { AndroidPreparationDevice } from './contracts.js'
 import { SystemDialogController } from './system-dialog-controller.js'
 
@@ -14,6 +15,14 @@ const fixture = (name: string) => readFileSync(
   fileURLToPath(new URL(`./__fixtures__/${name}`, import.meta.url)),
   'utf8',
 )
+
+function inspect(
+  controller: SystemDialogController,
+  options: Parameters<SystemDialogController['inspectAndHandle']>[0],
+  interactionState = createDialogInteractionState(),
+) {
+  return controller.inspectAndHandle(options, interactionState)
+}
 
 class DialogFakeDevice implements AndroidPreparationDevice {
   readonly calls: string[][] = []
@@ -71,10 +80,11 @@ describe('SystemDialogController', () => {
   it('uses the matched XML node bounds instead of fixed coordinates', async () => {
     const device = new DialogFakeDevice(fixture('vivo-install-warning.xml'))
     const controller = new SystemDialogController(device, async () => undefined)
-    const result = await controller.inspectAndHandle({
+    const result = await inspect(controller, {
       manufacturer: 'vivo',
       packageName: 'com.morphoinc.videopostprocessor',
       applicationLabel: 'Morpho VideoStabilizer',
+      phase: 'install',
       profileIds: ['vivo-package-installer-v1'],
       diagnosticsDirectory: '/tmp/not-used',
       maxActions: 4,
@@ -93,10 +103,11 @@ describe('SystemDialogController', () => {
       'mCurrentFocus=Window{b382e47 u0 com.android.packageinstaller/com.android.packageinstaller.PackageInterceptActivity type=1 }',
     )
     const controller = new SystemDialogController(device, async () => undefined)
-    const result = await controller.inspectAndHandle({
+    const result = await inspect(controller, {
       manufacturer: 'vivo',
       packageName: 'com.morphoinc.videopostprocessor',
       applicationLabel: 'Morpho VideoStabilizer',
+      phase: 'install',
       profileIds: ['vivo-package-installer-v1'],
       diagnosticsDirectory: '/tmp/not-used',
       maxActions: 4,
@@ -118,15 +129,15 @@ describe('SystemDialogController', () => {
       'privateFlags=[ DIRECT_BOOT_AWARE PRIVILEGED ]\npkgFlags=[ SYSTEM UPDATED_SYSTEM_APP HAS_CODE ]',
     )
     const controller = new SystemDialogController(device, async () => undefined)
-    const result = await controller.inspectAndHandle({
+    const result = await inspect(controller, {
       manufacturer: 'HONOR',
       packageName: 'com.morphoinc.videopostprocessor',
       applicationLabel: 'Morpho VideoStabilizer',
+      phase: 'install',
       profileIds: ['honor-package-installer-v1'],
       diagnosticsDirectory: '/tmp/not-used',
       maxActions: 4,
       signal: new AbortController().signal,
-      activeInstall: true,
     })
 
     expect(result.kind).toBe('handled')
@@ -140,15 +151,15 @@ describe('SystemDialogController', () => {
       'mCurrentFocus=Window{5d0186f u0 com.android.packageinstaller/com.hihonor.packageinstaller.hncust.safemode.sheet.SafeModeBottomSheetActivity}',
     )
     const controller = new SystemDialogController(device, async () => undefined)
-    const result = await controller.inspectAndHandle({
+    const result = await inspect(controller, {
       manufacturer: 'HONOR',
       packageName: 'com.morphoinc.videopostprocessor',
       applicationLabel: 'Morpho VideoStabilizer',
+      phase: 'install',
       profileIds: ['honor-safe-mode-install-sheet-v1'],
       diagnosticsDirectory: '/tmp/not-used',
       maxActions: 5,
       signal: new AbortController().signal,
-      activeInstall: true,
     })
 
     expect(result).toMatchObject({
@@ -174,10 +185,11 @@ describe('SystemDialogController', () => {
         screenshots.push(targetPath)
       })
 
-      const result = await controller.inspectAndHandle({
+      const result = await inspect(controller, {
         manufacturer: 'HONOR',
         packageName: 'com.morphoinc.videopostprocessor',
         applicationLabel: 'Morpho VideoStabilizer',
+        phase: 'install',
         profileIds: [
           'honor-package-installer-v1',
           'honor-magic-os-unreviewed-app-block-v1',
@@ -185,7 +197,6 @@ describe('SystemDialogController', () => {
         diagnosticsDirectory,
         maxActions: 5,
         signal: new AbortController().signal,
-        activeInstall: true,
       })
 
       expect(result).toMatchObject({
@@ -221,6 +232,7 @@ describe('SystemDialogController', () => {
       deviceModel: 'ALI-AN00',
       packageName: 'com.morphoinc.videopostprocessor',
       applicationLabel: 'Morpho VideoStabilizer',
+      phase: 'install',
       profileIds: [
         'honor-x50-magic-os-unreviewed-app-install-v1',
         'honor-magic-os-unreviewed-app-block-v1',
@@ -228,10 +240,9 @@ describe('SystemDialogController', () => {
       diagnosticsDirectory: '/tmp/not-used',
       maxActions: 5,
       signal: new AbortController().signal,
-      activeInstall: true,
     }
 
-    const checkboxResult = await controller.inspectAndHandle(options)
+    const checkboxResult = await inspect(controller, options)
     expect(checkboxResult).toMatchObject({
       kind: 'handled',
       dialog: {
@@ -251,7 +262,7 @@ describe('SystemDialogController', () => {
         'resource-id="android:id/button1" class="android.widget.Button" package="com.android.packageinstaller" content-desc="" checkable="false" checked="false" clickable="true" enabled="true" focusable="true" focused="false" scrollable="false" long-clickable="false" password="false" selected="false" bounds="[700,2300][1100,2400]"',
       )
 
-    const continueResult = await controller.inspectAndHandle(options)
+    const continueResult = await inspect(controller, options)
     expect(continueResult).toMatchObject({
       kind: 'handled',
       dialog: {
@@ -274,15 +285,15 @@ describe('SystemDialogController', () => {
       'mCurrentFocus=Window{b9eb1bc u0 com.miui.securitycenter/com.miui.permcenter.install.AdbInstallActivity}',
     )
     const controller = new SystemDialogController(device, async () => undefined)
-    const result = await controller.inspectAndHandle({
+    const result = await inspect(controller, {
       manufacturer: 'Xiaomi',
       packageName: 'com.morphoinc.videopostprocessor',
       applicationLabel: 'Morpho VideoStabilizer',
+      phase: 'install',
       profileIds: ['xiaomi-hyperos-package-installer-v1'],
       diagnosticsDirectory: '/tmp/not-used',
       maxActions: 5,
       signal: new AbortController().signal,
-      activeInstall: true,
     })
 
     expect(result).toMatchObject({
@@ -294,6 +305,33 @@ describe('SystemDialogController', () => {
     })
     expect(device.calls).toContainEqual(['shell', 'input', 'tap', '311', '2187'])
     expect(device.calls).not.toContainEqual(['shell', 'input', 'tap', '540', '2066'])
+  })
+
+  it('does not carry action history into a new business phase when the adapter is reused', async () => {
+    const device = new DialogFakeDevice(
+      fixture('vivo-install-warning.xml'),
+      'mCurrentFocus=Window{123 u0 com.vivo.packageinstaller/.InstallActivity}',
+    )
+    const controller = new SystemDialogController(device, async () => undefined)
+    const options = {
+      manufacturer: 'vivo',
+      packageName: 'com.morphoinc.videopostprocessor',
+      applicationLabel: 'Morpho VideoStabilizer',
+      phase: 'install',
+      profileIds: ['vivo-package-installer-v1'],
+      diagnosticsDirectory: '/tmp/not-used',
+      maxActions: 1,
+      signal: new AbortController().signal,
+    }
+
+    const installPhase = createDialogInteractionState()
+    const postLaunchPhase = createDialogInteractionState()
+    expect((await inspect(controller, options, installPhase)).kind).toBe('handled')
+    expect((await inspect(controller, options, installPhase)).kind).toBe('waiting')
+    expect((await inspect(controller, options, postLaunchPhase)).kind).toBe('handled')
+    expect(device.calls.filter(
+      (args) => args.slice(0, 3).join(' ') === 'shell input tap',
+    )).toHaveLength(2)
   })
 
   it('stops instead of tapping the same Honor safe-mode span twice when the page does not change', async () => {
@@ -308,16 +346,20 @@ describe('SystemDialogController', () => {
         manufacturer: 'HONOR',
         packageName: 'com.morphoinc.videopostprocessor',
         applicationLabel: 'Morpho VideoStabilizer',
+        phase: 'install',
         profileIds: ['honor-safe-mode-install-sheet-v1'],
         diagnosticsDirectory,
         maxActions: 5,
         signal: new AbortController().signal,
-        activeInstall: true,
       }
+      const interactionState = createDialogInteractionState()
 
-      await controller.inspectAndHandle(options)
-      await expect(controller.inspectAndHandle(options)).rejects.toMatchObject({
-        code: 'INSTALL_DIALOG_UNRECOGNIZED',
+      const firstResult = await controller.inspectAndHandle(options, interactionState)
+      const secondResult = await controller.inspectAndHandle(options, interactionState)
+      expect(firstResult.kind).toBe('handled')
+      expect(secondResult).toMatchObject({
+        kind: 'waiting',
+        reason: 'action-awaiting-transition',
       })
       expect(device.calls.filter(
         (args) => args.slice(0, 3).join(' ') === 'shell input tap',
@@ -346,10 +388,11 @@ describe('SystemDialogController', () => {
         screenshots.push(targetPath)
       })
 
-      await expect(controller.inspectAndHandle({
+      await expect(inspect(controller, {
         manufacturer: 'Xiaomi',
         packageName: 'com.morphoinc.videopostprocessor',
         applicationLabel: 'Morpho VideoStabilizer',
+        phase: 'install',
         profileIds: ['xiaomi-hyperos-package-installer-v1'],
         diagnosticsDirectory,
         maxActions: 4,
@@ -384,10 +427,11 @@ describe('SystemDialogController', () => {
     )
     const controller = new SystemDialogController(device, async () => undefined)
 
-    await expect(controller.inspectAndHandle({
+    await expect(inspect(controller, {
       manufacturer: 'Xiaomi',
       packageName: 'com.morphoinc.videopostprocessor',
       applicationLabel: 'Morpho VideoStabilizer',
+      phase: 'runtime-permission',
       profileIds: ['android-runtime-permission-v1'],
       diagnosticsDirectory: '/tmp/not-used',
       maxActions: 4,
@@ -401,10 +445,11 @@ describe('SystemDialogController', () => {
   it('does not click a generic unrelated continue dialog', async () => {
     const device = new DialogFakeDevice(fixture('unrelated-dialog.xml'))
     const controller = new SystemDialogController(device, async () => undefined)
-    const result = await controller.inspectAndHandle({
+    const result = await inspect(controller, {
       manufacturer: 'vivo',
       packageName: 'com.morphoinc.videopostprocessor',
       applicationLabel: 'Morpho VideoStabilizer',
+      phase: 'install',
       profileIds: ['vivo-package-installer-v1'],
       diagnosticsDirectory: '/tmp/not-used',
       maxActions: 4,
