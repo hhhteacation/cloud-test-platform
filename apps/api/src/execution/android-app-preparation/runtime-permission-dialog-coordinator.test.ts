@@ -131,6 +131,43 @@ describe('RuntimePermissionDialogCoordinator', () => {
     })
   })
 
+  it('verifies that a handled residual permission page disappears before completing', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+
+    const inspections: DialogInspectionResult[] = [{
+      kind: 'handled',
+      dialog: {
+        profileId: 'android-runtime-permission-v1',
+        action: 'allow-permission',
+        timestamp: '2026-08-09T00:00:00.000Z',
+      },
+      signature: {
+        pageKind: 'recognized-action',
+        windowPackage: 'com.android.permissioncontroller',
+        profileId: 'android-runtime-permission-v1',
+        action: 'allow-permission',
+      },
+    }, { kind: 'none' }]
+    let inspectionIndex = 0
+    const dialogs = fakeDialogs(() => inspections[Math.min(
+      inspectionIndex++,
+      inspections.length - 1,
+    )])
+    const coordinator = new RuntimePermissionDialogCoordinator(
+      fakePermissions(true).value,
+      dialogs.value,
+    )
+    const outcome = coordinator.handleResidualDialog(request())
+
+    await vi.runAllTimersAsync()
+
+    await expect(outcome).resolves.toEqual([
+      expect.objectContaining({ profileId: 'android-runtime-permission-v1' }),
+    ])
+    expect(dialogs.inspectAndHandle).toHaveBeenCalledTimes(2)
+  })
+
   it('fails immediately when a configured block Profile requires manual action', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(0)
