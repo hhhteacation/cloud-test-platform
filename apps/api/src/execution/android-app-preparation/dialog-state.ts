@@ -31,11 +31,6 @@ export interface InstallProgressSignature {
   }
 }
 
-export type DialogProgressObservation = {
-  kind: 'unrecognized' | 'waiting'
-  signature: InstallProgressSignature
-}
-
 export type DialogInspectionResult =
   | { kind: 'none' }
   | {

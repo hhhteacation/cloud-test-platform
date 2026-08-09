@@ -1,10 +1,9 @@
 import type { ApkDialogAutomationConfig } from '../../apk-protocols.js'
 import { TaskExecutionError } from '../execution-errors.js'
 import { delay } from '../file-utils.js'
-import { createDialogInteractionState } from './contracts.js'
 import type { HandledDialog, PreparationEvent } from './contracts.js'
 import { hasDialogObservationProfileForManufacturer } from './dialog-profiles.js'
-import { DialogProgressTracker } from './dialog-progress.js'
+import { DialogPhaseStateMachine } from './dialog-phase-state-machine.js'
 import type { SystemDialogController } from './system-dialog-controller.js'
 
 interface PostLaunchDialogRequest {
@@ -70,63 +69,69 @@ export class PostLaunchDialogCoordinator {
     )) return []
 
     const options = postLaunchDialogOptions(request, automation)
-    const handledDialogs: HandledDialog[] = []
-    const interactionState = createDialogInteractionState()
     const startedAt = Date.now()
     const unknownGraceMs = automation.unrecognizedGraceMs ?? 1_500
-    const dialogProgress = new DialogProgressTracker()
-    let observedSystemDialog = false
+    const dialogPhase = new DialogPhaseStateMachine({
+      phase: 'post-launch',
+      stalledAfterMs: unknownGraceMs,
+    })
 
-    while (Date.now() - startedAt < automation.timeoutMs) {
-      const inspection = await this.dialogs.inspectAndHandle(options, interactionState)
-
-      if (inspection.kind === 'none') {
-        dialogProgress.reset()
-        if (handledDialogs.length > 0) return handledDialogs
-      } else if (inspection.kind === 'handled') {
-        observedSystemDialog = true
-        handledDialogs.push(inspection.dialog)
-        dialogProgress.reset()
-        request.onEvent({
-          phase: 'handling_app_dialog',
-          progress: 24,
-          message: `已通过 ${inspection.dialog.profileId} 自动关闭应用启动兼容提示，正在验证页面迁移`,
-        })
-      } else if (inspection.kind === 'manual-action-required') {
-        observedSystemDialog = true
-        request.onEvent({
-          phase: 'handling_app_dialog',
-          progress: 24,
-          message: inspection.block.summary,
-        })
-        // The current block Profile represents an unfinished install
-        // authorization. Preserve the business cause even when it remains
-        // visible after launch instead of relabeling it as a post-launch issue.
-        throw new TaskExecutionError(
-          inspection.block.summary,
-          'INSTALL_USER_ACTION_REQUIRED',
+    try {
+      while (Date.now() - startedAt < automation.timeoutMs) {
+        const inspection = await this.dialogs.inspectAndHandle(
+          options,
+          dialogPhase.interactionState(),
         )
-      } else {
-        observedSystemDialog = true
-        const progress = dialogProgress.observe(inspection)
-        if (progress.elapsedMs >= unknownGraceMs) {
+        const observation = dialogPhase.observe(inspection)
+
+        if (inspection.kind === 'none') {
+          if (observation.transitionVerified) return dialogPhase.handledDialogs()
+        } else if (inspection.kind === 'handled') {
+          request.onEvent({
+            phase: 'handling_app_dialog',
+            progress: 24,
+            message: `已通过 ${inspection.dialog.profileId} 自动关闭应用启动兼容提示，正在验证页面迁移`,
+          })
+        } else if (inspection.kind === 'manual-action-required') {
+          request.onEvent({
+            phase: 'handling_app_dialog',
+            progress: 24,
+            message: inspection.block.summary,
+          })
+          // The current block Profile represents an unfinished install
+          // authorization. Preserve the business cause even when it remains
+          // visible after launch instead of relabeling it as a post-launch issue.
+          throw new TaskExecutionError(
+            inspection.block.summary,
+            'INSTALL_USER_ACTION_REQUIRED',
+          )
+        } else if (observation.stable) {
           await this.dialogs.saveTimeoutDiagnostics(options)
           throw stablePostLaunchFailure(inspection)
         }
+
+        await delay(automation.pollIntervalMs, request.signal)
       }
 
-      await delay(automation.pollIntervalMs, request.signal)
+      // The notice is optional only when every observation reported no known
+      // system dialog. Once the state machine observes a dialog or action,
+      // leaving the phase without a verified transition would leak unresolved
+      // UI state into the protocol executor.
+      if (dialogPhase.state() === 'observing') {
+        dialogPhase.complete()
+        return []
+      }
+
+      await this.dialogs.saveTimeoutDiagnostics(options)
+      dialogPhase.markTimeout()
+      throw new TaskExecutionError(
+        '应用启动后的系统提示在协议时限内没有完成可验证迁移',
+        'POST_LAUNCH_DIALOG_TIMEOUT',
+      )
+    } catch (error) {
+      if (request.signal.aborted) dialogPhase.cancel()
+      else if (dialogPhase.state() === 'observing') dialogPhase.fail()
+      throw error
     }
-
-    // The notice is optional only when no system dialog was observed. Once a
-    // dialog or action is observed, leaving the phase without a verified page
-    // transition would leak an unresolved UI state into the protocol executor.
-    if (!observedSystemDialog) return []
-
-    await this.dialogs.saveTimeoutDiagnostics(options)
-    throw new TaskExecutionError(
-      '应用启动后的系统提示在协议时限内没有完成可验证迁移',
-      'POST_LAUNCH_DIALOG_TIMEOUT',
-    )
   }
 }

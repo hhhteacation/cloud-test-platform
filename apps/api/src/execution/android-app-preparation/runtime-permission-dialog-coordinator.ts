@@ -1,10 +1,9 @@
 import type { ApkDialogAutomationConfig } from '../../apk-protocols.js'
 import { TaskExecutionError } from '../execution-errors.js'
 import { delay } from '../file-utils.js'
-import { createDialogInteractionState } from './contracts.js'
 import type { HandledDialog, PreparationEvent } from './contracts.js'
 import type { RuntimePermissionManager } from './runtime-permissions.js'
-import { DialogProgressTracker } from './dialog-progress.js'
+import { DialogPhaseStateMachine } from './dialog-phase-state-machine.js'
 import type { SystemDialogController } from './system-dialog-controller.js'
 
 interface RuntimePermissionDialogBaseRequest {
@@ -99,63 +98,66 @@ export class RuntimePermissionDialogCoordinator {
       return [] as HandledDialog[]
     }
 
-    const handledDialogs: HandledDialog[] = []
-    const interactionState = createDialogInteractionState()
     const startedAt = Date.now()
     const graceMs = request.automation.unrecognizedGraceMs ?? 15_000
-    const dialogProgress = new DialogProgressTracker()
+    const dialogPhase = new DialogPhaseStateMachine({
+      phase: 'runtime-permission',
+      stalledAfterMs: graceMs,
+    })
     const observationBudgetMs = Math.max(
       request.automation.pollIntervalMs,
       Math.min(request.automation.timeoutMs, Math.max(graceMs, request.automation.pollIntervalMs)),
     )
 
-    while (Date.now() - startedAt < observationBudgetMs) {
-      const inspection = await this.dialogs.inspectAndHandle(
-        runtimePermissionDialogOptions(request),
-        interactionState,
-      )
-
-      if (inspection.kind === 'none') {
-        return handledDialogs
-      }
-
-      if (inspection.kind === 'handled') {
-        handledDialogs.push(inspection.dialog)
-        request.onEvent({
-          phase: 'granting_permissions',
-          progress: 22,
-          message: `已通过 ${inspection.dialog.profileId} 自动处理残留权限弹窗`,
-        })
-        return handledDialogs
-      }
-
-      if (inspection.kind === 'manual-action-required') {
-        request.onEvent({
-          phase: 'granting_permissions',
-          progress: 22,
-          message: inspection.block.summary,
-        })
-        throw manualActionFailure(inspection.block.summary)
-      }
-
-      const progress = dialogProgress.observe(inspection)
-      if (progress.elapsedMs >= graceMs) {
-        await this.dialogs.saveTimeoutDiagnostics(
+    try {
+      while (Date.now() - startedAt < observationBudgetMs) {
+        const inspection = await this.dialogs.inspectAndHandle(
           runtimePermissionDialogOptions(request),
+          dialogPhase.interactionState(),
         )
-        throw stableDialogFailure(inspection, true)
+
+        const observation = dialogPhase.observe(inspection)
+        if (inspection.kind === 'none') {
+          dialogPhase.complete()
+          return dialogPhase.handledDialogs()
+        }
+
+        if (inspection.kind === 'handled') {
+          request.onEvent({
+            phase: 'granting_permissions',
+            progress: 22,
+            message: `已通过 ${inspection.dialog.profileId} 自动处理残留权限弹窗，正在验证页面迁移`,
+          })
+        } else if (inspection.kind === 'manual-action-required') {
+          request.onEvent({
+            phase: 'granting_permissions',
+            progress: 22,
+            message: inspection.block.summary,
+          })
+          throw manualActionFailure(inspection.block.summary)
+        } else if (observation.stable) {
+          await this.dialogs.saveTimeoutDiagnostics(
+            runtimePermissionDialogOptions(request),
+          )
+          throw stableDialogFailure(inspection, true)
+        }
+
+        await delay(request.automation.pollIntervalMs, request.signal)
       }
 
-      await delay(request.automation.pollIntervalMs, request.signal)
+      await this.dialogs.saveTimeoutDiagnostics(
+        runtimePermissionDialogOptions(request),
+      )
+      dialogPhase.markTimeout()
+      throw new TaskExecutionError(
+        '等待残留 Android 权限弹窗消失超过协议时限',
+        'RUNTIME_PERMISSION_DIALOG_TIMEOUT',
+      )
+    } catch (error) {
+      if (request.signal.aborted) dialogPhase.cancel()
+      else if (dialogPhase.state() === 'observing') dialogPhase.fail()
+      throw error
     }
-
-    await this.dialogs.saveTimeoutDiagnostics(
-      runtimePermissionDialogOptions(request),
-    )
-    throw new TaskExecutionError(
-      '等待残留 Android 权限弹窗消失超过协议时限',
-      'RUNTIME_PERMISSION_DIALOG_TIMEOUT',
-    )
   }
 
   async waitUntilGranted(request: RuntimePermissionDialogRequest) {
@@ -167,67 +169,71 @@ export class RuntimePermissionDialogCoordinator {
       )
     }
 
-    const handledDialogs: HandledDialog[] = []
-    const interactionState = createDialogInteractionState()
     const startedAt = Date.now()
     const graceMs = request.automation.unrecognizedGraceMs ?? 15_000
-    const dialogProgress = new DialogProgressTracker()
+    const dialogPhase = new DialogPhaseStateMachine({
+      phase: 'runtime-permission',
+      stalledAfterMs: graceMs,
+    })
 
-    while (Date.now() - startedAt < request.automation.timeoutMs) {
-      if (await this.permissions.areAllGranted(
-        request.packageName,
-        request.permissions,
-        request.signal,
-      )) {
-        await this.permissions.verifyAll(
+    try {
+      while (Date.now() - startedAt < request.automation.timeoutMs) {
+        if (await this.permissions.areAllGranted(
           request.packageName,
           request.permissions,
           request.signal,
+        )) {
+          await this.permissions.verifyAll(
+            request.packageName,
+            request.permissions,
+            request.signal,
+          )
+          dialogPhase.complete()
+          return dialogPhase.handledDialogs()
+        }
+
+        const inspection = await this.dialogs.inspectAndHandle(
+          runtimePermissionDialogOptions(request),
+          dialogPhase.interactionState(),
         )
-        return handledDialogs
-      }
+        const observation = dialogPhase.observe(inspection)
 
-      const inspection = await this.dialogs.inspectAndHandle(
-        runtimePermissionDialogOptions(request),
-        interactionState,
-      )
-
-      if (inspection.kind === 'handled') {
-        handledDialogs.push(inspection.dialog)
-        dialogProgress.reset()
-        request.onEvent({
-          phase: 'granting_permissions',
-          progress: 22,
-          message: `已通过 ${inspection.dialog.profileId} 自动确认相机和麦克风权限`,
-        })
-      } else if (inspection.kind === 'manual-action-required') {
-        request.onEvent({
-          phase: 'granting_permissions',
-          progress: 22,
-          message: inspection.block.summary,
-        })
-        throw manualActionFailure(inspection.block.summary)
-      } else if (inspection.kind === 'unrecognized' || inspection.kind === 'waiting') {
-        const progress = dialogProgress.observe(inspection)
-        if (progress.elapsedMs >= graceMs) {
+        if (inspection.kind === 'handled') {
+          request.onEvent({
+            phase: 'granting_permissions',
+            progress: 22,
+            message: `已通过 ${inspection.dialog.profileId} 自动确认相机和麦克风权限`,
+          })
+        } else if (inspection.kind === 'manual-action-required') {
+          request.onEvent({
+            phase: 'granting_permissions',
+            progress: 22,
+            message: inspection.block.summary,
+          })
+          throw manualActionFailure(inspection.block.summary)
+        } else if ((inspection.kind === 'unrecognized' || inspection.kind === 'waiting')
+          && observation.stable) {
           await this.dialogs.saveTimeoutDiagnostics(
             runtimePermissionDialogOptions(request),
           )
           throw stableDialogFailure(inspection, false)
         }
-      } else {
-        dialogProgress.reset()
+
+        await delay(request.automation.pollIntervalMs, request.signal)
       }
 
-      await delay(request.automation.pollIntervalMs, request.signal)
+      await this.dialogs.saveTimeoutDiagnostics(
+        runtimePermissionDialogOptions(request),
+      )
+      dialogPhase.markTimeout()
+      throw new TaskExecutionError(
+        '等待 Android 运行时权限确认超过协议时限',
+        'RUNTIME_PERMISSION_DIALOG_TIMEOUT',
+      )
+    } catch (error) {
+      if (request.signal.aborted) dialogPhase.cancel()
+      else if (dialogPhase.state() === 'observing') dialogPhase.fail()
+      throw error
     }
-
-    await this.dialogs.saveTimeoutDiagnostics(
-      runtimePermissionDialogOptions(request),
-    )
-    throw new TaskExecutionError(
-      '等待 Android 运行时权限确认超过协议时限',
-      'RUNTIME_PERMISSION_DIALOG_TIMEOUT',
-    )
   }
 }

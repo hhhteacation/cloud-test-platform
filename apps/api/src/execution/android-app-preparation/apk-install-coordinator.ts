@@ -1,13 +1,11 @@
 import { buildInstallPlan, type ApkDialogAutomationConfig } from '../../apk-protocols.js'
 import { TaskExecutionError } from '../execution-errors.js'
 import { delay } from '../file-utils.js'
-import { createDialogInteractionState } from './contracts.js'
 import type {
   AndroidPreparationDevice,
-  HandledDialog,
   PreparationEvent,
 } from './contracts.js'
-import { DialogProgressTracker } from './dialog-progress.js'
+import { DialogPhaseStateMachine } from './dialog-phase-state-machine.js'
 import { SystemDialogController, type DialogInspectionOptions } from './system-dialog-controller.js'
 
 interface InstallRequest {
@@ -130,10 +128,11 @@ export class ApkInstallCoordinator {
   ) {
     const installController = new AbortController()
     const unlinkAbort = linkAbortSignal(request.signal, installController)
-    const handledDialogs: HandledDialog[] = []
-    const interactionState = createDialogInteractionState()
-    const dialogProgress = new DialogProgressTracker()
     const unrecognizedGraceMs = automation.unrecognizedGraceMs ?? 15_000
+    const dialogPhase = new DialogPhaseStateMachine({
+      phase: 'install',
+      stalledAfterMs: unrecognizedGraceMs,
+    })
 
     const installOutcome = this.device.run(
       installArguments,
@@ -154,21 +153,19 @@ export class ApkInstallCoordinator {
       phase: 'install',
     }
 
-    const acceptRecognizedInspection = (
+    const observeInspection = (
       inspection: Awaited<ReturnType<SystemDialogController['inspectAndHandle']>>,
     ) => {
+      const observation = dialogPhase.observe(inspection)
       if (inspection.kind === 'handled') {
-        dialogProgress.reset()
-        handledDialogs.push(inspection.dialog)
         request.onEvent({
           phase: 'handling_install_dialog',
           progress: 17,
           message: `已通过严格白名单 ${inspection.dialog.profileId} 自动执行 ${inspection.dialog.action}`,
         })
-        return true
+        return { accepted: true, observation }
       }
       if (inspection.kind === 'manual-action-required') {
-        dialogProgress.reset()
         request.onEvent({
           phase: 'handling_install_dialog',
           progress: 17,
@@ -184,7 +181,7 @@ export class ApkInstallCoordinator {
           message: '上一次安装器动作尚未观察到页面迁移，等待下一次状态观察',
         })
       }
-      return false
+      return { accepted: false, observation }
     }
 
     const startedAt = Date.now()
@@ -195,16 +192,23 @@ export class ApkInstallCoordinator {
           delay(automation.pollIntervalMs, installController.signal).then(() => undefined),
         ])
         if (outcome) {
-          if (!outcome.ok) throw explainInstallFailure(outcome.error)
-          return handledDialogs
+          if (!outcome.ok) {
+            dialogPhase.fail()
+            throw explainInstallFailure(outcome.error)
+          }
+          dialogPhase.complete()
+          return dialogPhase.handledDialogs()
         }
 
-        const inspection = await this.dialogs.inspectAndHandle(inspectionOptions, interactionState)
-        if (acceptRecognizedInspection(inspection)) continue
+        const inspection = await this.dialogs.inspectAndHandle(
+          inspectionOptions,
+          dialogPhase.interactionState(),
+        )
+        const observed = observeInspection(inspection)
+        if (observed.accepted) continue
 
         if (inspection.kind === 'unrecognized' || inspection.kind === 'waiting') {
-          const progress = dialogProgress.observe(inspection)
-          if (progress.changed) {
+          if (observed.observation.signatureChanged) {
             request.onEvent({
               phase: 'handling_install_dialog',
               progress: 16,
@@ -213,39 +217,38 @@ export class ApkInstallCoordinator {
                 : '安装器界面仍在加载或安全扫描，等待严格白名单特征稳定',
             })
           }
-          if (progress.elapsedMs >= unrecognizedGraceMs) {
+          if (observed.observation.stable) {
             // The timeout diagnostics used to capture a newer frame after the
             // unrecognized decision. On slowly rendering OEM installers this
             // could save a fully recognizable page while still reporting the
             // stale frame as INSTALL_DIALOG_UNRECOGNIZED. Reclassify once at
             // the boundary before committing to the failure.
-            const finalInspection = await this.dialogs.inspectAndHandle(inspectionOptions, interactionState)
-            if (acceptRecognizedInspection(finalInspection)) continue
-            if (finalInspection.kind === 'none') {
-              dialogProgress.reset()
-              continue
-            }
+            const finalInspection = await this.dialogs.inspectAndHandle(
+              inspectionOptions,
+              dialogPhase.interactionState(),
+            )
+            const finalObserved = observeInspection(finalInspection)
+            if (finalObserved.accepted || finalInspection.kind === 'none') continue
             if (finalInspection.kind === 'unrecognized' || finalInspection.kind === 'waiting') {
-              const finalProgress = dialogProgress.observe(finalInspection)
-              if (finalProgress.changed) continue
+              if (!finalObserved.observation.stable) continue
 
               await this.dialogs.saveTimeoutDiagnostics(inspectionOptions)
               installController.abort()
               throw stableInstallDialogFailure(finalInspection)
             }
           }
-        } else {
-          dialogProgress.reset()
         }
       }
 
       await this.dialogs.saveTimeoutDiagnostics(inspectionOptions)
       installController.abort()
+      dialogPhase.markTimeout()
       throw new TaskExecutionError(
         `等待 APK 安装或安全确认超过 ${Math.round(automation.timeoutMs / 1000)} 秒`,
         'INSTALL_DIALOG_TIMEOUT',
       )
     } finally {
+      if (request.signal.aborted) dialogPhase.cancel()
       installController.abort()
       unlinkAbort()
     }
