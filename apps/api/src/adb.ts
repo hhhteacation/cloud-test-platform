@@ -17,6 +17,14 @@ import { BoundedProcessRunner, type ProcessRunner } from './process.js'
 import { TaskExecutionError } from './execution/execution-errors.js'
 import { getCheckName } from './execution/check-names.js'
 import { delay, sha256File } from './execution/file-utils.js'
+import {
+  ANDROID_DIALOG_PROFILE_VERSION,
+  buildAttemptManifest,
+  captureAndroidDeviceSnapshot,
+  readSourceIdentity,
+  writeAttemptManifest,
+  type SourceIdentity,
+} from './execution/attempt-manifest.js'
 import { AdbDeviceClient, type AdbObservation } from './execution/adb-client.js'
 import { AdbStreams, type LogcatStreamEvent } from './execution/adb-streams.js'
 import { TaskProcessRegistry } from './execution/process-registry.js'
@@ -105,6 +113,8 @@ export interface AdbRunExecutorDependencies {
   createDevice?: (adbPath: string, serial: string, runner: ProcessRunner) => AdbExecutionDevice
   createStreams?: (adbPath: string, serial: string, processes: TaskProcessRegistry, options: { maxLogBytes: number; killGraceMs: number }) => AdbExecutionStreams
   createAppPreparer?: (device: AdbExecutionDevice, captureScreenshot: (targetPath: string, signal: AbortSignal) => Promise<void>) => AndroidAppPreparer
+  readSourceIdentity?: () => Promise<SourceIdentity>
+  now?: () => Date
 }
 
 export function parseCarrierResult(content: string): AndroidResult {
@@ -194,6 +204,24 @@ export class AdbRunExecutor {
     const { taskId, runId } = execution
 
     const protocol = findApkExecutionProtocol(execution.apkPackageName)
+    const localRunDir = path.join(this.appConfig.tasksDir, taskId, 'device-runs', runId)
+    const attemptManifestPath = path.join(localRunDir, 'attempt-manifest.json')
+    const deviceSnapshotPath = path.join(localRunDir, 'device-snapshot.json')
+    let attemptManifest = await buildAttemptManifest({
+      attemptId: runId,
+      deviceSerial: execution.deviceSerial,
+      deviceName: execution.deviceName,
+      protocolId: protocol?.id ?? 'unsupported',
+      profileVersion: ANDROID_DIALOG_PROFILE_VERSION,
+      inputPath: execution.videoPath,
+      evidenceDirectory: localRunDir,
+    }, {
+      now: this.dependencies.now,
+      readSourceIdentity: this.dependencies.readSourceIdentity
+        ?? (() => readSourceIdentity(this.appConfig.rootDir)),
+    })
+    await writeAttemptManifest(attemptManifestPath, attemptManifest)
+
     if (!protocol) {
       this.database.setExecutionState({
         taskId,
@@ -213,7 +241,6 @@ export class AdbRunExecutor {
     const signal = controller.signal
     this.processes.begin(runId, controller, protocol.packageName)
 
-    const localRunDir = path.join(this.appConfig.tasksDir, taskId, 'device-runs', runId)
     const localResult = path.join(localRunDir, 'result.json')
     const localOutput = path.join(localRunDir, 'output.mp4')
     const localLogcat = path.join(localRunDir, 'logcat.txt')
@@ -248,6 +275,22 @@ export class AdbRunExecutor {
       this.database.addLog(taskId, runId, `开始检查 ADB 真机连接；执行协议：${protocol.name}`)
 
       const deviceStatus = await this.device.connectionStatus()
+      const deviceSnapshot = await captureAndroidDeviceSnapshot(
+        deviceStatus,
+        (args) => this.device.observe(args, signal, 30_000),
+      )
+      await writeFile(deviceSnapshotPath, `${JSON.stringify(deviceSnapshot, null, 2)}\n`)
+      attemptManifest = {
+        ...attemptManifest,
+        device: {
+          serial: execution.deviceSerial,
+          manufacturer: deviceSnapshot.manufacturer,
+          model: deviceSnapshot.model,
+          androidVersion: deviceSnapshot.androidVersion,
+          buildFingerprint: deviceSnapshot.buildFingerprint,
+        },
+      }
+      await writeAttemptManifest(attemptManifestPath, attemptManifest)
       if (deviceStatus === 'unauthorized') {
         throw new TaskExecutionError(`${execution.deviceName} 尚未授权此电脑，请在手机上确认 USB 调试授权`, 'DEVICE_UNAUTHORIZED')
       }

@@ -122,6 +122,18 @@ class FakeDevice implements AdbExecutionDevice {
   async observe(args: string[]) {
     this.observations.push(args)
     const section = args[args.length - 1]
+    if (args[0] === 'shell' && args[1] === 'getprop' && args[2] === 'ro.product.manufacturer') {
+      return result(0, 'Example')
+    }
+    if (args[0] === 'shell' && args[1] === 'getprop' && args[2] === 'ro.product.model') {
+      return result(0, 'MODEL-1')
+    }
+    if (args[0] === 'shell' && args[1] === 'getprop' && args[2] === 'ro.build.version.release') {
+      return result(0, '15')
+    }
+    if (args[0] === 'shell' && args[1] === 'getprop' && args[2] === 'ro.build.fingerprint') {
+      return result(0, 'example/model/device:15/BUILD/1:user/release-keys')
+    }
     if (args.includes('services')) {
       return result(0, this.serviceDetected ? 'ServiceRecord com.morphoinc.videopostprocessor/.BatchProcessService' : '')
     }
@@ -131,6 +143,11 @@ class FakeDevice implements AdbExecutionDevice {
       return this.incompletePower ? { ...value, stdout: 'partial', stdoutTruncated: true, stdoutBytes: 100 } : value
     }
     if (section === 'policy') return result(0, 'KeyguardServiceDelegate\n  interactiveState=INTERACTIVE_STATE_AWAKE')
+    if (section === 'windows') return result(0, 'mCurrentFocus=Window{123 u0 com.example/.MainActivity}')
+    if (args[0] === 'shell' && args[1] === 'pm') {
+      return result(0, 'package:com.android.permissioncontroller')
+    }
+    if (args[0] === 'shell' && args[1] === 'input') return result(0, 'Usage: input <command>')
     return result()
   }
 
@@ -196,6 +213,152 @@ describe('carrier result contract', () => {
 })
 
 describe('AdbRunExecutor cross-module seam', () => {
+  it('records source, input, device snapshot, and evidence identity before application preparation', async () => {
+    const { database, execution, root } = await createHarness()
+    const appConfig: AppConfig = {
+      ...defaultConfig,
+      rootDir: root,
+      adbPath: 'adb',
+      tasksDir: path.join(root, 'tasks'),
+      dataDir: root,
+      databasePath: path.join(root, 'cloud-test.sqlite'),
+      minFreeDiskBytes: 1,
+      pollIntervalMs: 1,
+    }
+    const runner: ProcessRunner = { async run() { return result() } }
+    const device = new FakeDevice(() => undefined)
+    const failingPreparer: AndroidAppPreparer = {
+      async prepareApplication() {
+        throw new TaskExecutionError('stop after manifest seam', 'APK_INSTALL_FAILED')
+      },
+    }
+    const executor = new AdbRunExecutor(
+      database, execution, createMediaChecker(), appConfig, runner,
+      {
+        createDevice: () => device,
+        createStreams: () => createStreams(() => undefined),
+        createAppPreparer: () => failingPreparer,
+        readSourceIdentity: async () => ({ commitSha: '0123456789abcdef', dirty: false }),
+        now: () => new Date('2026-08-09T01:02:03.000Z'),
+      },
+    )
+
+    await executor.execute()
+
+    const evidenceDirectory = path.join(root, 'tasks', execution.taskId, 'device-runs', execution.runId)
+    const manifest = JSON.parse(await readFile(path.join(evidenceDirectory, 'attempt-manifest.json'), 'utf8'))
+    expect(manifest).toEqual({
+      attemptId: execution.runId,
+      commitSha: '0123456789abcdef',
+      dirty: false,
+      startedAt: '2026-08-09T01:02:03.000Z',
+      device: {
+        serial: 'SERIAL-1',
+        manufacturer: 'Example',
+        model: 'MODEL-1',
+        androidVersion: '15',
+        buildFingerprint: 'example/model/device:15/BUILD/1:user/release-keys',
+      },
+      protocolId: 'morpho-video-postprocessor-batch-v2',
+      profileVersion: 'android-dialog-profiles@1',
+      inputFingerprint: '3dc8a2dea8c9b132b872a0acc02b82baa35a5aa5f90f6bccfd520028034881a3',
+      evidenceDirectory,
+    })
+    expect(JSON.parse(await readFile(path.join(evidenceDirectory, 'device-snapshot.json'), 'utf8'))).toMatchObject({
+      connectionStatus: 'online',
+      manufacturer: 'Example',
+      model: 'MODEL-1',
+      androidVersion: '15',
+      currentWindow: 'com.example/.MainActivity',
+      controllerPackages: ['com.android.permissioncontroller'],
+      inputAutomationCommandAvailable: true,
+      observationFailures: [],
+    })
+  })
+
+  it('keeps the initial manifest when the device is offline', async () => {
+    const { database, execution, root } = await createHarness()
+    const appConfig: AppConfig = {
+      ...defaultConfig,
+      rootDir: root,
+      adbPath: 'adb',
+      tasksDir: path.join(root, 'tasks'),
+      dataDir: root,
+      databasePath: path.join(root, 'cloud-test.sqlite'),
+      minFreeDiskBytes: 1,
+      pollIntervalMs: 1,
+    }
+    const runner: ProcessRunner = { async run() { return result() } }
+    const device = new FakeDevice(() => undefined)
+    device.connectionStatus = async () => 'offline'
+    const executor = new AdbRunExecutor(
+      database, execution, createMediaChecker(), appConfig, runner,
+      {
+        createDevice: () => device,
+        createStreams: () => createStreams(() => undefined),
+        createAppPreparer: () => preparer,
+        readSourceIdentity: async () => ({ commitSha: 'offline-sha', dirty: true }),
+      },
+    )
+
+    await executor.execute()
+
+    const evidenceDirectory = path.join(root, 'tasks', execution.taskId, 'device-runs', execution.runId)
+    expect(JSON.parse(await readFile(path.join(evidenceDirectory, 'attempt-manifest.json'), 'utf8'))).toMatchObject({
+      attemptId: execution.runId,
+      commitSha: 'offline-sha',
+      dirty: true,
+      device: { serial: 'SERIAL-1', manufacturer: 'unknown', model: 'unknown' },
+    })
+    expect(JSON.parse(await readFile(path.join(evidenceDirectory, 'device-snapshot.json'), 'utf8'))).toMatchObject({
+      connectionStatus: 'offline',
+      observationFailures: ['device connection is offline'],
+    })
+  })
+
+  it('records an attempt before rejecting an unsupported APK protocol', async () => {
+    const { database, execution, root } = await createHarness()
+    const unsupportedExecution: DeviceRunExecution = {
+      ...execution,
+      apkPackageName: 'com.example.unsupported',
+    }
+    const appConfig: AppConfig = {
+      ...defaultConfig,
+      rootDir: root,
+      adbPath: 'adb',
+      tasksDir: path.join(root, 'tasks'),
+      dataDir: root,
+      databasePath: path.join(root, 'cloud-test.sqlite'),
+      minFreeDiskBytes: 1,
+      pollIntervalMs: 1,
+    }
+    const runner: ProcessRunner = { async run() { return result() } }
+    const executor = new AdbRunExecutor(
+      database, unsupportedExecution, createMediaChecker(), appConfig, runner,
+      {
+        createDevice: () => new FakeDevice(() => undefined),
+        createStreams: () => createStreams(() => undefined),
+        createAppPreparer: () => preparer,
+        readSourceIdentity: async () => ({ commitSha: 'unsupported-sha', dirty: false }),
+      },
+    )
+
+    await executor.execute()
+
+    const manifestPath = path.join(
+      root, 'tasks', execution.taskId, 'device-runs', execution.runId, 'attempt-manifest.json',
+    )
+    expect(JSON.parse(await readFile(manifestPath, 'utf8'))).toMatchObject({
+      attemptId: execution.runId,
+      protocolId: 'unsupported',
+      commitSha: 'unsupported-sha',
+      device: { serial: 'SERIAL-1' },
+    })
+    expect(database.getTask(execution.taskId)?.runs['device-1']).toMatchObject({
+      status: 'failed', failureCode: 'UNSUPPORTED_APK_PROTOCOL',
+    })
+  })
+
   it('keeps a Morpho run alive when startup probe output is incomplete but business Logcat arrives', async () => {
     const { database, execution, root } = await createHarness()
     const appConfig: AppConfig = {
