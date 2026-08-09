@@ -2,6 +2,7 @@ import type { ApkDialogAutomationConfig } from '../../apk-protocols.js'
 import { TaskExecutionError } from '../execution-errors.js'
 import { delay } from '../file-utils.js'
 import type { HandledDialog, PreparationEvent } from './contracts.js'
+import type { ApplicationPreparationEvidenceRecorder } from './application-preparation-evidence-recorder.js'
 import { hasDialogObservationProfileForManufacturer } from './dialog-profiles.js'
 import { DialogPhaseStateMachine } from './dialog-phase-state-machine.js'
 import type { SystemDialogController } from './system-dialog-controller.js'
@@ -19,6 +20,11 @@ interface PostLaunchDialogRequest {
 type PostLaunchDialogInspector = Pick<
   SystemDialogController,
   'inspectAndHandle' | 'saveTimeoutDiagnostics'
+>
+
+type PostLaunchEvidenceRecorder = Pick<
+  ApplicationPreparationEvidenceRecorder,
+  'recordTransition'
 >
 
 function postLaunchDialogOptions(
@@ -57,7 +63,10 @@ function stablePostLaunchFailure(inspection: { kind: 'unrecognized' | 'waiting' 
  * global settings or accept generic confirmation buttons.
  */
 export class PostLaunchDialogCoordinator {
-  constructor(private readonly dialogs: PostLaunchDialogInspector) {}
+  constructor(
+    private readonly dialogs: PostLaunchDialogInspector,
+    private readonly evidence?: PostLaunchEvidenceRecorder,
+  ) {}
 
   async handleOptionalDialog(request: PostLaunchDialogRequest): Promise<HandledDialog[]> {
     const automation = request.automation
@@ -75,6 +84,7 @@ export class PostLaunchDialogCoordinator {
       phase: 'post-launch',
       stalledAfterMs: unknownGraceMs,
     })
+    let lastEvidenceDirectory: string | undefined
 
     try {
       while (Date.now() - startedAt < automation.timeoutMs) {
@@ -83,6 +93,12 @@ export class PostLaunchDialogCoordinator {
           dialogPhase.interactionState(),
         )
         const observation = dialogPhase.observe(inspection)
+        lastEvidenceDirectory = inspection.evidenceDirectory ?? lastEvidenceDirectory
+        await this.evidence?.recordTransition(lastEvidenceDirectory, {
+          phase: 'post-launch',
+          inspection,
+          observation,
+        }).catch(() => undefined)
 
         if (inspection.kind === 'none') {
           if (observation.transitionVerified) return dialogPhase.handledDialogs()

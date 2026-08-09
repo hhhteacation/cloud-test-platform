@@ -118,6 +118,59 @@ describe('RuntimePermissionDialogCoordinator', () => {
     expect(dialogs.inspectAndHandle).toHaveBeenCalledOnce()
   })
 
+  it('records runtime-permission state transitions against the captured dialog frame', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+
+    const permissions = fakePermissions(false, true)
+    const dialogs = fakeDialogs(() => ({
+      kind: 'handled',
+      evidenceDirectory: 'application-preparation/runtime-permission/0001-dialog-frame',
+      dialog: {
+        profileId: 'android-runtime-permission-v1',
+        action: 'allow-permission',
+        timestamp: '2026-08-09T00:00:00.000Z',
+      },
+      signature: {
+        pageKind: 'recognized-action',
+        windowPackage: 'com.android.permissioncontroller',
+        profileId: 'android-runtime-permission-v1',
+        action: 'allow-permission',
+      },
+    }))
+    const evidence = { recordTransition: vi.fn(async () => undefined) }
+    const coordinator = new RuntimePermissionDialogCoordinator(
+      permissions.value,
+      dialogs.value,
+      evidence,
+    )
+    const outcome = coordinator.waitUntilGranted(request())
+
+    await vi.runAllTimersAsync()
+    await expect(outcome).resolves.toHaveLength(1)
+    expect(evidence.recordTransition).toHaveBeenNthCalledWith(
+      1,
+      'application-preparation/runtime-permission/0001-dialog-frame',
+      expect.objectContaining({
+        phase: 'runtime-permission',
+        inspection: expect.objectContaining({ kind: 'handled' }),
+        observation: expect.objectContaining({ state: 'action-executed' }),
+      }),
+    )
+    expect(evidence.recordTransition).toHaveBeenNthCalledWith(
+      2,
+      'application-preparation/runtime-permission/0001-dialog-frame',
+      expect.objectContaining({
+        phase: 'runtime-permission',
+        inspection: expect.objectContaining({ kind: 'none' }),
+        observation: expect.objectContaining({
+          state: 'completed',
+          transitionVerified: true,
+        }),
+      }),
+    )
+  })
+
   it('forwards the configured Profile set while the phase prevents install actions', async () => {
     const dialogs = fakeDialogs(() => ({ kind: 'none' }))
     const coordinator = new RuntimePermissionDialogCoordinator(fakePermissions(true).value, dialogs.value)

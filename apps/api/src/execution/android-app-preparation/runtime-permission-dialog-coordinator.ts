@@ -2,6 +2,7 @@ import type { ApkDialogAutomationConfig } from '../../apk-protocols.js'
 import { TaskExecutionError } from '../execution-errors.js'
 import { delay } from '../file-utils.js'
 import type { HandledDialog, PreparationEvent } from './contracts.js'
+import type { ApplicationPreparationEvidenceRecorder } from './application-preparation-evidence-recorder.js'
 import type { RuntimePermissionManager } from './runtime-permissions.js'
 import { DialogPhaseStateMachine } from './dialog-phase-state-machine.js'
 import type { SystemDialogController } from './system-dialog-controller.js'
@@ -28,6 +29,11 @@ type RuntimePermissionVerifier = Pick<
 type RuntimePermissionDialogInspector = Pick<
   SystemDialogController,
   'inspectAndHandle' | 'saveTimeoutDiagnostics'
+>
+
+type RuntimePermissionEvidenceRecorder = Pick<
+  ApplicationPreparationEvidenceRecorder,
+  'recordTransition'
 >
 
 function runtimePermissionDialogOptions(request: RuntimePermissionDialogBaseRequest) {
@@ -83,6 +89,7 @@ export class RuntimePermissionDialogCoordinator {
   constructor(
     private readonly permissions: RuntimePermissionVerifier,
     private readonly dialogs: RuntimePermissionDialogInspector,
+    private readonly evidence?: RuntimePermissionEvidenceRecorder,
   ) {}
 
   /**
@@ -104,6 +111,7 @@ export class RuntimePermissionDialogCoordinator {
       phase: 'runtime-permission',
       stalledAfterMs: graceMs,
     })
+    let lastEvidenceDirectory: string | undefined
     const observationBudgetMs = Math.max(
       request.automation.pollIntervalMs,
       Math.min(request.automation.timeoutMs, Math.max(graceMs, request.automation.pollIntervalMs)),
@@ -122,6 +130,12 @@ export class RuntimePermissionDialogCoordinator {
         )
 
         const observation = dialogPhase.observe(inspection)
+        lastEvidenceDirectory = inspection.evidenceDirectory ?? lastEvidenceDirectory
+        await this.evidence?.recordTransition(lastEvidenceDirectory, {
+          phase: 'runtime-permission',
+          inspection,
+          observation,
+        }).catch(() => undefined)
         if (inspection.kind === 'none') {
           dialogPhase.complete()
           return dialogPhase.handledDialogs()
@@ -180,6 +194,7 @@ export class RuntimePermissionDialogCoordinator {
       phase: 'runtime-permission',
       stalledAfterMs: graceMs,
     })
+    let lastEvidenceDirectory: string | undefined
 
     try {
       while (Date.now() - startedAt < request.automation.timeoutMs) {
@@ -193,6 +208,13 @@ export class RuntimePermissionDialogCoordinator {
             request.permissions,
             request.signal,
           )
+          const verifiedInspection = { kind: 'none' as const }
+          const verifiedObservation = dialogPhase.observe(verifiedInspection)
+          await this.evidence?.recordTransition(lastEvidenceDirectory, {
+            phase: 'runtime-permission',
+            inspection: verifiedInspection,
+            observation: verifiedObservation,
+          }).catch(() => undefined)
           dialogPhase.complete()
           return dialogPhase.handledDialogs()
         }
@@ -202,6 +224,12 @@ export class RuntimePermissionDialogCoordinator {
           dialogPhase.interactionState(),
         )
         const observation = dialogPhase.observe(inspection)
+        lastEvidenceDirectory = inspection.evidenceDirectory ?? lastEvidenceDirectory
+        await this.evidence?.recordTransition(lastEvidenceDirectory, {
+          phase: 'runtime-permission',
+          inspection,
+          observation,
+        }).catch(() => undefined)
 
         if (inspection.kind === 'handled') {
           request.onEvent({

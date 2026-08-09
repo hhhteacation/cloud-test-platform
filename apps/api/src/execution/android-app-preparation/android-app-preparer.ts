@@ -62,8 +62,12 @@ export class DefaultAndroidAppPreparer implements AndroidAppPreparer {
     const dialogs = new SystemDialogController(device, captureScreenshot, preparationEvidence)
     const installer = new ApkInstallCoordinator(device, dialogs, preparationEvidence)
     const permissions = new RuntimePermissionManager(device)
-    const permissionDialogs = new RuntimePermissionDialogCoordinator(permissions, dialogs)
-    const postLaunchDialogs = new PostLaunchDialogCoordinator(dialogs)
+    const permissionDialogs = new RuntimePermissionDialogCoordinator(
+      permissions,
+      dialogs,
+      preparationEvidence,
+    )
+    const postLaunchDialogs = new PostLaunchDialogCoordinator(dialogs, preparationEvidence)
 
     const readinessObservation = await readiness.prepare(request.signal)
     if (readinessObservation.condition !== 'ready') {

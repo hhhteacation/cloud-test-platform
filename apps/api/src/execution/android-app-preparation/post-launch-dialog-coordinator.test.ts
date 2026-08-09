@@ -164,6 +164,44 @@ describe('PostLaunchDialogCoordinator', () => {
     expect(dialogs.inspectAndHandle).toHaveBeenCalledTimes(2)
   })
 
+  it('records the handled post-launch page and its verified transition', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+
+    const frameDirectory = 'application-preparation/post-launch/0001-dialog-frame'
+    const dialogs = fakeDialogs([
+      { ...handled(), evidenceDirectory: frameDirectory },
+      { kind: 'none' },
+    ])
+    const evidence = { recordTransition: vi.fn(async () => undefined) }
+    const coordinator = new PostLaunchDialogCoordinator(dialogs.value, evidence)
+    const outcome = coordinator.handleOptionalDialog(request())
+
+    await vi.runAllTimersAsync()
+    await expect(outcome).resolves.toHaveLength(1)
+    expect(evidence.recordTransition).toHaveBeenNthCalledWith(
+      1,
+      frameDirectory,
+      expect.objectContaining({
+        phase: 'post-launch',
+        inspection: expect.objectContaining({ kind: 'handled' }),
+        observation: expect.objectContaining({ state: 'action-executed' }),
+      }),
+    )
+    expect(evidence.recordTransition).toHaveBeenNthCalledWith(
+      2,
+      frameDirectory,
+      expect.objectContaining({
+        phase: 'post-launch',
+        inspection: expect.objectContaining({ kind: 'none' }),
+        observation: expect.objectContaining({
+          state: 'completed',
+          transitionVerified: true,
+        }),
+      }),
+    )
+  })
+
   it('reports a handled action with no page transition as a post-launch timeout', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(0)
