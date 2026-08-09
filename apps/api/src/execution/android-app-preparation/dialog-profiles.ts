@@ -453,6 +453,17 @@ const OPLUS_PROFILE: DialogProfileDefinition = {
   allowedWindowPackages: [
     'com.oplus.appdetail',
   ],
+  allowedWindowComponents: [
+    /^com\.oplus\.appdetail\/com\.oplus\.appdetail\.model\.guide\.ui\.InstallGuideActivity$/,
+  ],
+  requiredResourceIds: [
+    'com.oplus.appdetail:id/app_name',
+    'com.oplus.appdetail:id/tv_result_title',
+    'com.oplus.appdetail:id/tv_result_desc',
+    'com.oplus.appdetail:id/tv_risk_name',
+    'com.oplus.appdetail:id/tv_risk_desc',
+    'com.oplus.appdetail:id/btn_left',
+  ],
   featurePatterns: [
     /检测结果[:：]?\s*涉及敏感权限/i,
     /请谨慎安装使用/i,
@@ -460,7 +471,10 @@ const OPLUS_PROFILE: DialogProfileDefinition = {
     /权限授予和隐私管控/i,
     /未查询到此应用的\s*ICP\s*备案信息/i,
   ],
-  targets: [{ textPatterns: [/^继续安装$/] }],
+  targets: [{
+    textPatterns: [/^继续安装$/],
+    resourceIds: ['com.oplus.appdetail:id/btn_left'],
+  }],
   action: 'continue-install',
 }
 

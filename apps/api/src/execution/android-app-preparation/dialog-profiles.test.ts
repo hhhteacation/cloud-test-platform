@@ -53,6 +53,7 @@ describe('strict Android system dialog profiles', () => {
       packageName: 'com.morphoinc.videopostprocessor',
       applicationLabel: 'Morpho VideoStabilizer',
       focusedWindowPackage: 'com.oplus.appdetail',
+      focusedWindowComponent: 'com.oplus.appdetail/com.oplus.appdetail.model.guide.ui.InstallGuideActivity',
       phase: 'install',
       nodes: parseUiNodes(fixture('oplus-coloros-real-install-risk.xml')),
     })
@@ -61,6 +62,57 @@ describe('strict Android system dialog profiles', () => {
     expect(match?.action).toBe('continue-install')
     expect(match?.node.resourceId).toBe('com.oplus.appdetail:id/btn_left')
     expect(match?.node.text).toBe('继续安装')
+  })
+
+
+  it('matches the captured OnePlus PKR110 ColorOS 15 install guide through the same strict OPlus profile', () => {
+    const match = matchDialogAction(['oplus-package-installer-v1'], {
+      manufacturer: 'OnePlus',
+      deviceModel: 'PKR110',
+      packageName: 'com.morphoinc.videopostprocessor',
+      applicationLabel: 'Morpho VideoStabilizer',
+      focusedWindowPackage: 'com.oplus.appdetail',
+      focusedWindowComponent: 'com.oplus.appdetail/com.oplus.appdetail.model.guide.ui.InstallGuideActivity',
+      phase: 'install',
+      nodes: parseUiNodes(fixture('pkr110-oplus-install-guide.xml')),
+    })
+
+    expect(match?.profileId).toBe('oplus-package-installer-v1')
+    expect(match?.action).toBe('continue-install')
+    expect(match?.node.resourceId).toBe('com.oplus.appdetail:id/btn_left')
+    expect(match?.node.text).toBe('继续安装')
+  })
+
+  it('does not reuse the OPlus install action on another com.oplus.appdetail activity', () => {
+    const match = matchDialogAction(['oplus-package-installer-v1'], {
+      manufacturer: 'OnePlus',
+      deviceModel: 'PKR110',
+      packageName: 'com.morphoinc.videopostprocessor',
+      applicationLabel: 'Morpho VideoStabilizer',
+      focusedWindowPackage: 'com.oplus.appdetail',
+      focusedWindowComponent: 'com.oplus.appdetail/com.oplus.appdetail.model.cancel.CancelInstallActivity',
+      phase: 'install',
+      nodes: parseUiNodes(fixture('pkr110-oplus-install-guide.xml')),
+    })
+
+    expect(match).toBeUndefined()
+  })
+
+  it('requires the verified OPlus resource-id set instead of matching generic risk text alone', () => {
+    const incompleteXml = fixture('pkr110-oplus-install-guide.xml')
+      .replaceAll('com.oplus.appdetail:id/tv_result_desc', 'com.oplus.appdetail:id/unknown_result_desc')
+    const match = matchDialogAction(['oplus-package-installer-v1'], {
+      manufacturer: 'OnePlus',
+      deviceModel: 'PKR110',
+      packageName: 'com.morphoinc.videopostprocessor',
+      applicationLabel: 'Morpho VideoStabilizer',
+      focusedWindowPackage: 'com.oplus.appdetail',
+      focusedWindowComponent: 'com.oplus.appdetail/com.oplus.appdetail.model.guide.ui.InstallGuideActivity',
+      phase: 'install',
+      nodes: parseUiNodes(incompleteXml),
+    })
+
+    expect(match).toBeUndefined()
   })
 
   it('matches the real Xiaomi HyperOS ADB install confirmation without toggling its opt-out checkbox', () => {
