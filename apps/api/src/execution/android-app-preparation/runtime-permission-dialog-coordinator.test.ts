@@ -198,6 +198,27 @@ describe('RuntimePermissionDialogCoordinator', () => {
     expect(dialogs.inspectAndHandle).toHaveBeenCalledOnce()
     expect(dialogs.saveTimeoutDiagnostics).not.toHaveBeenCalled()
   })
+  it('observes once before applying a budget that expires during setup', async () => {
+    vi.spyOn(Date, 'now').mockReturnValueOnce(0).mockReturnValueOnce(1)
+
+    const dialogs = fakeDialogs(() => ({
+      kind: 'unrecognized',
+      signature: {
+        pageKind: 'unrecognized-page',
+        windowPackage: 'com.android.permissioncontroller',
+        pageFingerprint: 'same-unknown-page',
+      },
+    }))
+    const coordinator = new RuntimePermissionDialogCoordinator(fakePermissions(false).value, dialogs.value)
+    const outcome = coordinator.handleResidualDialog(request({
+      automation: automation({ timeoutMs: 1, pollIntervalMs: 1, unrecognizedGraceMs: 0 }),
+    })).catch((error: unknown) => error)
+
+    const error = await outcome
+    expect(error).toMatchObject({ code: 'RUNTIME_PERMISSION_DIALOG_UNRECOGNIZED' })
+    expect(dialogs.inspectAndHandle).toHaveBeenCalledOnce()
+  })
+
   it('reports a stable unknown page as unrecognized and preserves diagnostics', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(0)

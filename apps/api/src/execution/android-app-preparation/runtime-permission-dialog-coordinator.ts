@@ -110,7 +110,12 @@ export class RuntimePermissionDialogCoordinator {
     )
 
     try {
-      while (Date.now() - startedAt < observationBudgetMs) {
+      // A short budget must not expire before the first page observation. The
+      // first observation is the evidence that distinguishes an unknown page
+      // from a page that was never inspected at all.
+      let firstObservation = true
+      while (firstObservation || Date.now() - startedAt < observationBudgetMs) {
+        firstObservation = false
         const inspection = await this.dialogs.inspectAndHandle(
           runtimePermissionDialogOptions(request),
           dialogPhase.interactionState(),
