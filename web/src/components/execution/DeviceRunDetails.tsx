@@ -9,6 +9,7 @@ import { useMemo } from 'react'
 
 import type { CheckResult, DeviceProfile, DeviceRunResult } from '../../types'
 import { CHECKS } from '../../features/tasks/taskDefinitions'
+import { ExecutionFailureDetails } from './ExecutionFailureDetails'
 
 export function DeviceRunDetails({
   device,
@@ -67,6 +68,7 @@ export function DeviceRunDetails({
           description={run.failureMessage || '执行失败，请查看实时日志。'}
         />
       )}
+      <ExecutionFailureDetails failure={run?.failure} />
 
       <CheckGrid run={run} />
       <Divider />

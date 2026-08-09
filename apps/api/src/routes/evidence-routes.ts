@@ -1,5 +1,5 @@
 import { createReadStream } from 'node:fs'
-import { access } from 'node:fs/promises'
+import { access, realpath, stat } from 'node:fs/promises'
 import path from 'node:path'
 
 import type { FastifyInstance } from 'fastify'
@@ -8,7 +8,48 @@ import type { AppConfig } from '../config.js'
 import type { PlatformDatabase } from '../database.js'
 import { sendVideoFile } from '../http-file.js'
 
+export function resolveEvidenceFilePath(runDirectory: string, relativePath: string): string | undefined {
+  const parts = relativePath.split(/[\\/]+/)
+  if (!relativePath || path.isAbsolute(relativePath) || parts.some((part) => !part || part === '.' || part === '..')) {
+    return undefined
+  }
+  const resolvedRunDirectory = path.resolve(runDirectory)
+  const filePath = path.resolve(resolvedRunDirectory, relativePath)
+  return filePath.startsWith(`${resolvedRunDirectory}${path.sep}`) ? filePath : undefined
+}
+
 export function registerEvidenceRoutes(app: FastifyInstance, database: PlatformDatabase, config: AppConfig) {
+  app.get<{ Params: { taskId: string; runId: string; '*': string } }>('/api/tasks/:taskId/device-runs/:runId/evidence/*', async (request, reply) => {
+    const { taskId, runId } = request.params
+    if (!database.hasDeviceRun(taskId, runId)) {
+      return reply.code(404).send({ code: 'DEVICE_RUN_NOT_FOUND', message: '设备执行记录不存在' })
+    }
+
+    const relativePath = request.params['*']
+    const runDirectory = path.resolve(config.tasksDir, taskId, 'device-runs', runId)
+    const filePath = resolveEvidenceFilePath(runDirectory, relativePath)
+    if (!filePath) return reply.code(400).send({ code: 'INVALID_EVIDENCE_PATH', message: 'Evidence 路径不合法' })
+    try {
+      const [realRunDirectory, realFilePath] = await Promise.all([realpath(runDirectory), realpath(filePath)])
+      if (!realFilePath.startsWith(`${realRunDirectory}${path.sep}`)) {
+        return reply.code(400).send({ code: 'INVALID_EVIDENCE_PATH', message: 'Evidence 不得离开当前 Attempt 目录' })
+      }
+      await access(realFilePath)
+      if (!(await stat(realFilePath)).isFile()) {
+        return reply.code(404).send({ code: 'EVIDENCE_NOT_FOUND', message: '当前 Attempt 尚未收集该 Evidence' })
+      }
+      const extension = path.extname(realFilePath).toLowerCase()
+      const contentType = extension === '.json' ? 'application/json; charset=utf-8'
+        : extension === '.xml' ? 'application/xml; charset=utf-8'
+          : extension === '.txt' ? 'text/plain; charset=utf-8'
+            : extension === '.png' ? 'image/png' : 'application/octet-stream'
+      reply.header('Content-Type', contentType)
+      reply.header('Content-Disposition', `attachment; filename="${path.basename(realFilePath).replace(/[^A-Za-z0-9._-]/g, '_')}"`)
+      return reply.send(createReadStream(realFilePath))
+    } catch {
+      return reply.code(404).send({ code: 'EVIDENCE_NOT_FOUND', message: '当前 Attempt 尚未收集该 Evidence' })
+    }
+  })
   app.get<{ Params: { taskId: string; runId: string } }>('/api/tasks/:taskId/device-runs/:runId/logcat', async (request, reply) => {
     const { taskId, runId } = request.params
     if (!database.hasDeviceRun(taskId, runId)) return reply.code(404).send({ code: 'DEVICE_RUN_NOT_FOUND', message: '设备执行记录不存在' })

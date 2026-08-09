@@ -3,6 +3,7 @@ import { Alert, Button, Descriptions, Drawer, Empty, Progress, Space, Table, Tag
 import type { TableProps } from 'antd'
 
 import type { ApkExecutionProtocol, CheckResult, DeviceProfile, DeviceRunResult } from '../../types'
+import { ExecutionFailureDetails } from '../execution/ExecutionFailureDetails'
 import { formatBytes, formatDate } from '../../utils/format'
 
 interface DeviceRunDetailDrawerProps {
@@ -78,6 +79,8 @@ export function DeviceRunDetailDrawer({ open, run, device, protocolName, protoco
         <Descriptions.Item label="失败代码">{run.failureCode ?? '-'}</Descriptions.Item>
         <Descriptions.Item label="失败原因">{run.failureMessage ?? '-'}</Descriptions.Item>
       </Descriptions>
+
+      <ExecutionFailureDetails failure={run.failure} />
 
       <Alert
         className="drawer-section"

@@ -3,7 +3,7 @@ import type { DatabaseSync } from 'node:sqlite'
 
 import { findApkExecutionProtocol, toPublicApkProtocol } from '../../apk-protocols.js'
 import { getTaskCapabilities } from '../../task-capabilities.js'
-import { deserializeExecutionFailure } from '../../execution/execution-failures.js'
+import { deserializeExecutionFailure, mapExecutionFailureEvidence } from '../../execution/execution-failures.js'
 import type {
   ArtifactRecord, DevicePlatform, DeviceRunPhase, DeviceRunView, RunStatus, TaskStatus,
   TestReportView, TestTaskView,
@@ -93,12 +93,12 @@ export class TaskStore {
         adbSerial: asString(row.adb_serial) || undefined,
         failureCode: asString(row.failure_code) || undefined,
         failureMessage: asString(row.failure_message) || undefined,
-        failure: deserializeExecutionFailure({
+        failure: mapExecutionFailureEvidence(deserializeExecutionFailure({
           serialized: asString(row.execution_failure_json) || undefined,
           legacyCode: asString(row.failure_code) || undefined,
           legacyMessage: asString(row.failure_message) || undefined,
           phase: (asString(row.phase) || 'validating_device') as DeviceRunPhase,
-        }),
+        }), (ref) => this.evidenceUrl(taskId, runId, ref)),
         executionStatus: (asString(row.execution_status) || 'pending') as DeviceRunView['executionStatus'],
         executionFailureCode: asString(row.execution_failure_code) || undefined,
         mediaIntegrityStatus: (asString(row.media_integrity_status) || 'not_checked') as DeviceRunView['mediaIntegrityStatus'],
@@ -169,6 +169,12 @@ export class TaskStore {
       failure ? asString(failure.failure_message) || null : null,
       now(), taskId,
     )
+  }
+
+  private evidenceUrl(taskId: string, runId: string, ref: string) {
+    if (ref.startsWith('/')) return ref
+    const encodedRef = ref.split('/').map((part) => encodeURIComponent(part)).join('/')
+    return `/api/tasks/${encodeURIComponent(taskId)}/device-runs/${encodeURIComponent(runId)}/evidence/${encodedRef}`
   }
 
   private artifactView(artifact: ArtifactRecord) {

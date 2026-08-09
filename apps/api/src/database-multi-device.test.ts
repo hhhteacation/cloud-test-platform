@@ -5,6 +5,7 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { PlatformDatabase } from './database.js'
+import { createExecutionFailure } from './execution/execution-failures.js'
 import type { ArtifactRecord } from './types.js'
 
 describe('PlatformDatabase 多设备任务聚合', () => {
@@ -109,6 +110,40 @@ describe('PlatformDatabase 多设备任务聚合', () => {
       },
     })
     expect(database.getReport(task.id)).toMatchObject({ conclusion: 'failed' })
+  })
+
+  it('兼容返回旧失败字段并把结构化 Evidence 映射为当前运行下载 URL', () => {
+    const task = createTwoDeviceTask()
+    const [runA] = database.listQueuedDeviceRunJobs(task.id)
+
+    database.setExecutionState({
+      taskId: task.id,
+      runId: runA.runId,
+      runStatus: 'failed',
+      phase: 'validating_output',
+      progress: 100,
+      failure: createExecutionFailure({
+        code: 'RESULT_INVALID',
+        phase: 'validating_output',
+        message: 'result.json 无效',
+        evidenceRefs: ['attempt-manifest.json', 'diagnostics/ui.xml'],
+      }),
+      finished: true,
+    })
+
+    expect(database.getTask(task.id)?.runs['device-a']).toMatchObject({
+      failureCode: 'RESULT_INVALID',
+      failureMessage: 'result.json 无效',
+      failure: {
+        code: 'RESULT_INVALID',
+        category: 'protocol',
+        phase: 'validating_output',
+        evidenceRefs: [
+          `/api/tasks/${task.id}/device-runs/${runA.runId}/evidence/attempt-manifest.json`,
+          `/api/tasks/${task.id}/device-runs/${runA.runId}/evidence/diagnostics/ui.xml`,
+        ],
+      },
+    })
   })
 
   it('任务取消后忽略 Worker 的迟到状态更新和兜底失败', () => {

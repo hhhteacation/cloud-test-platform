@@ -168,6 +168,14 @@ export function serializeExecutionFailure(failure: ExecutionFailure | undefined 
   return failure ? JSON.stringify(failure) : null
 }
 
+export function mapExecutionFailureEvidence(
+  failure: ExecutionFailure | undefined,
+  mapRef: (ref: string) => string,
+): ExecutionFailure | undefined {
+  if (!failure) return undefined
+  return { ...failure, evidenceRefs: failure.evidenceRefs.map(mapRef) }
+}
+
 export function parseExecutionFailure(value: unknown): ExecutionFailure | undefined {
   if (!isRecord(value)
     || typeof value.code !== 'string'

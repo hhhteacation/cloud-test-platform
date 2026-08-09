@@ -6,6 +6,7 @@ import {
   deserializeExecutionFailure,
   executionFailureFromError,
   isRegisteredExecutionFailureCode,
+  mapExecutionFailureEvidence,
   mergeAuxiliaryFailure,
   parseExecutionFailure,
   registeredExecutionFailureCodes,
@@ -75,6 +76,22 @@ describe('ExecutionFailure Registry', () => {
       phase: 'processing',
       cancelled: true,
     })).toMatchObject({ code: 'TASK_CANCELLED', category: 'cancelled', confidence: 'confirmed' })
+  })
+
+  it('只映射返回视图中的 Evidence 引用且不修改原失败对象', () => {
+    const failure = createExecutionFailure({
+      code: 'RESULT_INVALID',
+      phase: 'validating_output',
+      message: 'invalid',
+      evidenceRefs: ['result.json'],
+    })
+
+    expect(mapExecutionFailureEvidence(failure, (ref) => `/evidence/${ref}`)).toEqual({
+      ...failure,
+      evidenceRefs: ['/evidence/result.json'],
+    })
+    expect(failure.evidenceRefs).toEqual(['result.json'])
+    expect(mapExecutionFailureEvidence(undefined, (ref) => ref)).toBeUndefined()
   })
 
   it('结构化 JSON 损坏时回退 legacy 字段且不让读取失败', () => {

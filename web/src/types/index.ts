@@ -63,6 +63,27 @@ export type DeviceRunPhase =
   | 'generating_report'
   | 'completed'
 
+export type ExecutionFailureCategory =
+  | 'observation'
+  | 'device'
+  | 'business'
+  | 'protocol'
+  | 'infrastructure'
+  | 'user_action'
+  | 'cancelled'
+export type ExecutionFailureRetryability = 'never' | 'safe' | 'conditional'
+export type ExecutionFailureConfidence = 'confirmed' | 'probable' | 'unknown'
+
+export interface ExecutionFailure {
+  code: string
+  category: ExecutionFailureCategory
+  phase: DeviceRunPhase
+  retryability: ExecutionFailureRetryability
+  confidence: ExecutionFailureConfidence
+  message: string
+  evidenceRefs: string[]
+}
+
 export interface ApkExecutionProtocol {
   id: string
   name: string
@@ -217,6 +238,7 @@ export interface DeviceRunResult {
   adbSerial?: string
   failureCode?: string
   failureMessage?: string
+  failure?: ExecutionFailure
   executionStatus?: ExecutionStatus
   executionFailureCode?: string
   mediaIntegrityStatus?: MediaIntegrityStatus
