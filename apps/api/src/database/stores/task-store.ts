@@ -3,6 +3,7 @@ import type { DatabaseSync } from 'node:sqlite'
 
 import { findApkExecutionProtocol, toPublicApkProtocol } from '../../apk-protocols.js'
 import { getTaskCapabilities } from '../../task-capabilities.js'
+import { deserializeExecutionFailure } from '../../execution/execution-failures.js'
 import type {
   ArtifactRecord, DevicePlatform, DeviceRunPhase, DeviceRunView, RunStatus, TaskStatus,
   TestReportView, TestTaskView,
@@ -92,6 +93,12 @@ export class TaskStore {
         adbSerial: asString(row.adb_serial) || undefined,
         failureCode: asString(row.failure_code) || undefined,
         failureMessage: asString(row.failure_message) || undefined,
+        failure: deserializeExecutionFailure({
+          serialized: asString(row.execution_failure_json) || undefined,
+          legacyCode: asString(row.failure_code) || undefined,
+          legacyMessage: asString(row.failure_message) || undefined,
+          phase: (asString(row.phase) || 'validating_device') as DeviceRunPhase,
+        }),
         executionStatus: (asString(row.execution_status) || 'pending') as DeviceRunView['executionStatus'],
         executionFailureCode: asString(row.execution_failure_code) || undefined,
         mediaIntegrityStatus: (asString(row.media_integrity_status) || 'not_checked') as DeviceRunView['mediaIntegrityStatus'],

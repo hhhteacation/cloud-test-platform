@@ -10,6 +10,7 @@ import { PlatformDatabase, type DeviceRunExecution, type DeviceRunJob } from './
 import { MediaIntegrityChecker } from './media-integrity.js'
 import { BoundedProcessRunner, type ProcessRunner } from './process.js'
 import { TaskExecutionError } from './execution/execution-errors.js'
+import { createExecutionFailure, executionFailureFromError } from './execution/execution-failures.js'
 import {
   ANDROID_DIALOG_PROFILE_VERSION,
   buildAttemptManifest,
@@ -155,6 +156,7 @@ export class AdbRunExecutor {
 
     const protocol = findApkExecutionProtocol(execution.apkPackageName)
     const localRunDir = path.join(this.appConfig.tasksDir, taskId, 'device-runs', runId)
+    let currentPhase: DeviceRunPhase = 'validating_device'
     const attemptManifestPath = path.join(localRunDir, 'attempt-manifest.json')
     const deviceSnapshotPath = path.join(localRunDir, 'device-snapshot.json')
     let attemptManifest = await buildAttemptManifest({
@@ -173,16 +175,23 @@ export class AdbRunExecutor {
     await writeAttemptManifest(attemptManifestPath, attemptManifest)
 
     if (!protocol) {
+      currentPhase = 'validating_apk'
+      const failure = createExecutionFailure({
+        code: 'UNSUPPORTED_APK_PROTOCOL',
+        phase: currentPhase,
+        message: `APK 包名 ${execution.apkPackageName || '未知'} 没有执行协议`,
+        evidenceRefs: ['attempt-manifest.json'],
+      })
       this.database.setExecutionState({
         taskId,
         runId: execution.runId,
         taskStatus: 'failed',
         runStatus: 'failed',
+        phase: currentPhase,
         progress: 100,
         finished: true,
-        executionStatus: 'failed', executionFailureCode: 'UNSUPPORTED_APK_PROTOCOL',
-        failureCode: 'UNSUPPORTED_APK_PROTOCOL',
-        failureMessage: `APK 包名 ${execution.apkPackageName || '未知'} 没有执行协议`,
+        executionStatus: 'failed', executionFailureCode: failure.code,
+        failure,
       })
       return
     }
@@ -199,6 +208,7 @@ export class AdbRunExecutor {
     let protocolExecutorOwnsCleanup = false
 
     const update = (phase: DeviceRunPhase, progress: number, message: string) => {
+      currentPhase = phase
       this.database.setExecutionState({
         taskId, runId, taskStatus: 'running', runStatus: 'running', phase, progress,
       })
@@ -211,7 +221,7 @@ export class AdbRunExecutor {
         taskId, runId, taskStatus: 'running', runStatus: 'running',
         phase: 'validating_device', progress: 2, started: true,
         executionStatus: 'running', executionFailureCode: null,
-        failureCode: null, failureMessage: null,
+        failure: null,
       })
       this.database.addLog(taskId, runId, `开始检查 ADB 真机连接；执行协议：${protocol.name}`)
 
@@ -387,24 +397,21 @@ export class AdbRunExecutor {
       )
     } catch (error) {
       const cancelled = signal.aborted || this.database.isCancelled(taskId)
-      const failureCode = cancelled
-        ? 'TASK_CANCELLED'
-        : error instanceof TaskExecutionError
-          ? error.code
-          : 'SDK_PROCESSING_FAILED'
-      const failureMessage = cancelled
-        ? '用户取消任务'
-        : error instanceof Error
-          ? error.message
-          : String(error)
+      const failure = executionFailureFromError({
+        error,
+        phase: currentPhase,
+        cancelled,
+        evidenceRefs: ['attempt-manifest.json'],
+      })
       if (!cancelled) {
+        const mediaFailure = failure.code.startsWith('MEDIA_')
         this.database.setExecutionState({
           taskId, runId, taskStatus: 'failed', runStatus: 'failed',
-          progress: 100, finished: true, failureCode, failureMessage,
-          executionStatus: failureCode.startsWith('MEDIA_') ? 'passed' : 'failed',
-          executionFailureCode: failureCode.startsWith('MEDIA_') ? null : failureCode,
+          phase: failure.phase, progress: 100, finished: true, failure,
+          executionStatus: mediaFailure ? 'passed' : 'failed',
+          executionFailureCode: mediaFailure ? null : failure.code,
         })
-        this.database.addLog(taskId, runId, `${failureCode}：${failureMessage}`, 'error')
+        this.database.addLog(taskId, runId, `${failure.code}：${failure.message}`, 'error')
       }
       await writeFile(localLogcat, '', { flag: 'a' }).catch(() => undefined)
     } finally {

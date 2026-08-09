@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite'
 
 import type { DeviceRunExecution, DeviceRunJob } from '../contracts.js'
+import { createExecutionFailure, serializeExecutionFailure, type ExecutionFailure } from '../../execution/execution-failures.js'
 import type {
   DeviceConnectionKind, DevicePlatform, DeviceRunPhase, ExecutionStatus, MediaIntegrityResult, RunStatus, TaskStatus,
 } from '../../types.js'
@@ -120,6 +121,7 @@ export class DeviceRunStore {
     progress?: number
     failureCode?: string | null
     failureMessage?: string | null
+    failure?: ExecutionFailure | null
     executionStatus?: ExecutionStatus
     executionFailureCode?: string | null
     started?: boolean
@@ -130,19 +132,35 @@ export class DeviceRunStore {
     const currentRun = this.db.prepare('SELECT * FROM device_runs WHERE id = ? AND task_id = ?').get(input.runId, input.taskId) as Row | undefined
     if (!currentRun) return
     const timestamp = now()
+    const phase = input.phase ?? (asString(currentRun.phase) || 'validating_device') as DeviceRunPhase
+    const legacyFailureChanged = input.failureCode !== undefined || input.failureMessage !== undefined
+    const legacyCode = input.failureCode === undefined ? asString(currentRun.failure_code) || null : input.failureCode
+    const legacyMessage = input.failureMessage === undefined ? asString(currentRun.failure_message) || null : input.failureMessage
+    const failure = input.failure !== undefined
+      ? input.failure
+      : legacyFailureChanged && legacyCode
+        ? createExecutionFailure({ code: legacyCode, phase, message: legacyMessage || legacyCode })
+        : legacyFailureChanged ? null : undefined
+    const failureCode = failure === undefined ? legacyCode : failure?.code ?? null
+    const failureMessage = failure === undefined ? legacyMessage : failure?.message ?? null
+    const failureJson = failure === undefined
+      ? asString(currentRun.execution_failure_json) || null
+      : serializeExecutionFailure(failure)
+
     this.db.prepare(`
       UPDATE device_runs SET status = ?, phase = ?, progress = ?,
         failure_code = ?, failure_message = ?, execution_status = ?, execution_failure_code = ?,
-        started_at = ?, finished_at = ?
+        execution_failure_json = ?, started_at = ?, finished_at = ?
       WHERE id = ? AND task_id = ?
     `).run(
       input.runStatus ?? asString(currentRun.status),
-      input.phase ?? (asString(currentRun.phase) || null),
+      phase,
       input.progress ?? asNumber(currentRun.progress),
-      input.failureCode === undefined ? asString(currentRun.failure_code) || null : input.failureCode,
-      input.failureMessage === undefined ? asString(currentRun.failure_message) || null : input.failureMessage,
+      failureCode,
+      failureMessage,
       input.executionStatus ?? (asString(currentRun.execution_status) || 'pending'),
       input.executionFailureCode === undefined ? asString(currentRun.execution_failure_code) || null : input.executionFailureCode,
+      failureJson,
       input.started ? timestamp : asString(currentRun.started_at) || null,
       input.finished ? timestamp : asString(currentRun.finished_at) || null,
       input.runId, input.taskId,
@@ -152,16 +170,27 @@ export class DeviceRunStore {
 
   fail(job: DeviceRunJob, failureCode: string, failureMessage: string) {
     const timestamp = now()
+    const row = this.db.prepare('SELECT phase FROM device_runs WHERE id = ? AND task_id = ?')
+      .get(job.runId, job.taskId) as Row | undefined
+    const failure = createExecutionFailure({
+      code: failureCode,
+      phase: (asString(row?.phase) || 'validating_device') as DeviceRunPhase,
+      message: failureMessage,
+    })
     const result = this.db.prepare(`
       UPDATE device_runs
       SET status = 'failed', progress = 100,
-          failure_code = ?, failure_message = ?, finished_at = ?
+          failure_code = ?, failure_message = ?, execution_status = 'failed',
+          execution_failure_code = ?, execution_failure_json = ?, finished_at = ?
       WHERE id = ? AND task_id = ?
         AND status IN ('queued', 'running')
         AND EXISTS (SELECT 1 FROM tasks WHERE id = ? AND status <> 'cancelled')
-    `).run(failureCode, failureMessage, timestamp, job.runId, job.taskId, job.taskId)
+    `).run(
+      failure.code, failure.message, failure.code, serializeExecutionFailure(failure), timestamp,
+      job.runId, job.taskId, job.taskId,
+    )
     if (result.changes === 1) {
-      this.audit.addLog(job.taskId, job.runId, failureMessage, 'error')
+      this.audit.addLog(job.taskId, job.runId, failure.message, 'error')
       this.onTaskStateChanged(job.taskId)
     }
     return result.changes === 1
@@ -175,10 +204,26 @@ export class DeviceRunStore {
   }
 
   cancelForTask(taskId: string, timestamp: string) {
-    this.db.prepare(`
-      UPDATE device_runs SET status = 'blocked', progress = 100,
-      failure_code = 'TASK_CANCELLED', failure_message = '用户取消任务', finished_at = ?
+    const rows = this.db.prepare(`
+      SELECT id, phase FROM device_runs
       WHERE task_id = ? AND status IN ('queued', 'running')
-    `).run(timestamp, taskId)
+    `).all(taskId) as Row[]
+    const update = this.db.prepare(`
+      UPDATE device_runs SET status = 'blocked', progress = 100,
+        failure_code = ?, failure_message = ?, execution_status = 'cancelled',
+        execution_failure_code = ?, execution_failure_json = ?, finished_at = ?
+      WHERE id = ? AND task_id = ? AND status IN ('queued', 'running')
+    `)
+    for (const row of rows) {
+      const failure = createExecutionFailure({
+        code: 'TASK_CANCELLED',
+        phase: (asString(row.phase) || 'validating_device') as DeviceRunPhase,
+        message: '用户取消任务',
+      })
+      update.run(
+        failure.code, failure.message, failure.code, serializeExecutionFailure(failure),
+        timestamp, asString(row.id), taskId,
+      )
+    }
   }
 }

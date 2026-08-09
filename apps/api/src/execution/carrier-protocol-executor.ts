@@ -194,18 +194,36 @@ export class CarrierProtocolExecutor extends BaseProtocolExecutor {
       throw new TaskExecutionError(
         `无法读取 APK 返回的 result.json：${error instanceof Error ? error.message : String(error)}`,
         'RESULT_INVALID',
+        { evidenceRefs: ['result.json'], phase: 'validating_output' },
       )
     }
 
-    const result = parseCarrierResult(content)
+    let result: AndroidResult
+    try {
+      result = parseCarrierResult(content)
+    } catch (error) {
+      if (error instanceof TaskExecutionError) {
+        throw new TaskExecutionError(error.message, error.code, {
+          evidenceRefs: ['result.json'],
+          phase: 'validating_output',
+        })
+      }
+      throw error
+    }
     if (result.taskId !== context.taskId) {
-      throw new TaskExecutionError('APK 返回的 taskId 与当前任务不一致', 'RESULT_TASK_MISMATCH')
+      throw new TaskExecutionError(
+        'APK 返回的 taskId 与当前任务不一致',
+        'RESULT_TASK_MISMATCH',
+        { evidenceRefs: ['result.json'], phase: 'validating_output' },
+      )
     }
     for (const check of result.checks ?? []) context.reporter.upsertCheck(check)
     if (result.status !== 'passed') {
+      const vendorCode = result.failureCode
       throw new TaskExecutionError(
-        result.failureMessage ?? '真实 SDK 视频处理失败',
-        result.failureCode ?? 'SDK_PROCESSING_FAILED',
+        `${result.failureMessage ?? '真实 SDK 视频处理失败'}${vendorCode ? `（供应商错误码：${vendorCode}）` : ''}`,
+        'SDK_PROCESSING_FAILED',
+        { evidenceRefs: ['result.json'], phase: 'processing' },
       )
     }
   }

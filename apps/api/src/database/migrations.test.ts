@@ -24,9 +24,9 @@ describe('数据库迁移', () => {
     const { db, databasePath } = await databaseFixture()
     const first = runDatabaseMigrations(db, databasePath)
     const second = runDatabaseMigrations(db, databasePath)
-    expect(first.appliedMigrationIds).toEqual(['001-initial-schema', '002-compatibility-columns', '003-device-endpoints', '004-task-execution-endpoint-columns'])
+    expect(first.appliedMigrationIds).toEqual(['001-initial-schema', '002-compatibility-columns', '003-device-endpoints', '004-task-execution-endpoint-columns', '005-structured-execution-failure'])
     expect(second.appliedMigrationIds).toEqual([])
-    expect(db.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get()).toMatchObject({ count: 4 })
+    expect(db.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get()).toMatchObject({ count: 5 })
     db.close()
   })
 
@@ -52,12 +52,12 @@ describe('数据库迁移', () => {
     `).run('legacy-device', 'LEGACY-SERIAL', timestamp, timestamp)
 
     const result = runDatabaseMigrations(db, databasePath)
-    expect(result.appliedMigrationIds).toEqual(['003-device-endpoints', '004-task-execution-endpoint-columns'])
+    expect(result.appliedMigrationIds).toEqual(['003-device-endpoints', '004-task-execution-endpoint-columns', '005-structured-execution-failure'])
     expect(db.prepare('SELECT device_id, kind, adb_serial, status FROM device_endpoints').get()).toMatchObject({
       device_id: 'legacy-device', kind: 'usb', adb_serial: 'LEGACY-SERIAL', status: 'online',
     })
     expect((db.prepare('PRAGMA table_info(tasks)').all() as Array<{ name: string }>).map((column) => column.name)).toContain('connection_mode')
-    expect((db.prepare('PRAGMA table_info(device_runs)').all() as Array<{ name: string }>).map((column) => column.name)).toEqual(expect.arrayContaining(['endpoint_id', 'connection_kind', 'adb_serial']))
+    expect((db.prepare('PRAGMA table_info(device_runs)').all() as Array<{ name: string }>).map((column) => column.name)).toEqual(expect.arrayContaining(['endpoint_id', 'connection_kind', 'adb_serial', 'execution_failure_json']))
     expect(db.prepare('SELECT id, serial FROM devices WHERE id = ?').get('legacy-device')).toMatchObject({ id: 'legacy-device', serial: 'LEGACY-SERIAL' })
     db.close()
   })
@@ -104,7 +104,7 @@ describe('数据库迁移', () => {
     expect(runColumnsBefore).not.toEqual(expect.arrayContaining(['endpoint_id', 'connection_kind', 'adb_serial']))
 
     const result = runDatabaseMigrations(db, databasePath)
-    expect(result.appliedMigrationIds).toEqual(['004-task-execution-endpoint-columns'])
+    expect(result.appliedMigrationIds).toEqual(['004-task-execution-endpoint-columns', '005-structured-execution-failure'])
     expect(result.backupPath).toBeTruthy()
     expect(existsSync(result.backupPath!)).toBe(true)
 

@@ -7,6 +7,7 @@ import { initialSchemaSql } from './001-initial-schema.js'
 import { compatibilityColumns } from './002-compatibility-columns.js'
 import { deviceEndpointsMigration } from './003-device-endpoints.js'
 import { taskExecutionEndpointColumns } from './004-task-execution-endpoint-columns.js'
+import { structuredExecutionFailureColumns } from './005-structured-execution-failure.js'
 
 export interface DatabaseMigration {
   id: string
@@ -73,6 +74,15 @@ export const DATABASE_MIGRATIONS: DatabaseMigration[] = [
     definition: taskExecutionEndpointColumns,
     up: (db) => {
       for (const [table, columns] of Object.entries(taskExecutionEndpointColumns)) {
+        ensureColumns(db, table, columns)
+      }
+    },
+  },
+  {
+    id: '005-structured-execution-failure',
+    definition: structuredExecutionFailureColumns,
+    up: (db) => {
+      for (const [table, columns] of Object.entries(structuredExecutionFailureColumns)) {
         ensureColumns(db, table, columns)
       }
     },

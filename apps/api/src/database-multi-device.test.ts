@@ -97,6 +97,16 @@ describe('PlatformDatabase 多设备任务聚合', () => {
       status: 'failed',
       progress: 100,
       passRate: 50,
+      runs: {
+        'device-b': {
+          failure: {
+            code: 'OUTPUT_MISSING',
+            category: 'protocol',
+            phase: 'validating_device',
+            message: '设备 B 没有生成输出',
+          },
+        },
+      },
     })
     expect(database.getReport(task.id)).toMatchObject({ conclusion: 'failed' })
   })
@@ -114,6 +124,8 @@ describe('PlatformDatabase 多设备任务聚合', () => {
     expect(database.getTask(task.id)?.runs['device-a']).toMatchObject({
       status: 'blocked',
       failureCode: 'TASK_CANCELLED',
+      executionStatus: 'cancelled',
+      failure: { code: 'TASK_CANCELLED', category: 'cancelled' },
     })
   })
 
@@ -131,6 +143,12 @@ describe('PlatformDatabase 多设备任务聚合', () => {
       status: 'failed',
       failureCode: 'INSTALL_USER_ACTION_REQUIRED',
       failureMessage: expect.stringContaining('需要人工确认安装授权'),
+      executionStatus: 'failed',
+      failure: {
+        code: 'INSTALL_USER_ACTION_REQUIRED',
+        category: 'user_action',
+        confidence: 'confirmed',
+      },
     })
     expect(updated.runs['device-b']).toMatchObject({ status: 'queued' })
     expect(updated.status).toBe('running')

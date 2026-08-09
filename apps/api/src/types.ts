@@ -1,4 +1,5 @@
 import type { ApkExecutionProtocol } from './apk-protocols.js'
+import type { ExecutionFailure } from './execution/execution-failures.js'
 
 export type ArtifactKind = 'apk' | 'video'
 export type TaskStatus = 'queued' | 'running' | 'passed' | 'failed' | 'cancelled'
@@ -154,6 +155,7 @@ export interface DeviceRunView {
   adbSerial?: string
   failureCode?: string
   failureMessage?: string
+  failure?: ExecutionFailure
   executionStatus?: ExecutionStatus
   executionFailureCode?: string
   mediaIntegrityStatus?: MediaIntegrityStatus

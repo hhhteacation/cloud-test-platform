@@ -72,6 +72,16 @@ describe('领域 Store', () => {
     runs.setState({ taskId: task.id, runId: run.id, runStatus: 'passed', executionStatus: 'passed', progress: 100, finished: true })
     expect(tasks.get(task.id)?.status).toBe('passed')
     expect(tasks.report(task.id)?.conclusion).toBe('passed')
+
+    db.prepare(`
+      UPDATE device_runs
+      SET status = 'failed', phase = 'processing', failure_code = 'APP_CRASHED',
+        failure_message = 'legacy process exit', execution_failure_json = '{broken'
+      WHERE id = ?
+    `).run(run.id)
+    expect(tasks.get(task.id)?.runs[device.id].failure).toMatchObject({
+      code: 'APP_CRASHED', category: 'business', phase: 'processing', message: 'legacy process exit',
+    })
     expect(runs.getQueueStatus(device.id)).toBe('idle')
     expect(endpoints.remove(network.id)).toBe(true)
     expect(endpoints.get(network.id)).toBeUndefined()

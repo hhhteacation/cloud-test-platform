@@ -209,8 +209,9 @@ describe('CarrierProtocolExecutor seam', () => {
       }),
     })
     await expect(harness.executor.execute(harness.context)).rejects.toMatchObject({
-      code: 'VENDOR_PROCESSING_FAILED',
-      message: 'vendor rejected input',
+      code: 'SDK_PROCESSING_FAILED',
+      message: 'vendor rejected input（供应商错误码：VENDOR_PROCESSING_FAILED）',
+      evidenceRefs: ['result.json'],
     })
   })
 
@@ -250,8 +251,9 @@ describe('CarrierProtocolExecutor seam', () => {
     })
 
     await expect(harness.executor.execute(harness.context)).rejects.toMatchObject({
-      code: 'VENDOR_FAILED',
-      message: 'original failure',
+      code: 'SDK_PROCESSING_FAILED',
+      message: 'original failure（供应商错误码：VENDOR_FAILED）',
+      evidenceRefs: ['result.json'],
     })
     expect(harness.logs).toContainEqual({
       message: expect.stringContaining('force-stop denied'),
