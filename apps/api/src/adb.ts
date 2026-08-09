@@ -21,6 +21,7 @@ import {
 } from './execution/attempt-manifest.js'
 import { AdbDeviceClient } from './execution/adb-client.js'
 import { AdbStreams } from './execution/adb-streams.js'
+import { AttemptEvidenceRecorder } from './execution/attempt-evidence-recorder.js'
 import { TaskProcessRegistry } from './execution/process-registry.js'
 import { createProtocolExecutor } from './execution/protocol-executor-factory.js'
 import type {
@@ -206,6 +207,19 @@ export class AdbRunExecutor {
     const screenshotDir = path.join(localRunDir, 'screenshots')
     const diagnosticsDirectory = path.join(localRunDir, 'diagnostics')
     let protocolExecutorOwnsCleanup = false
+    const evidenceRecorder = new AttemptEvidenceRecorder({
+      executionKey: runId,
+      runDirectory: localRunDir,
+      maxLogcatBytes: this.appConfig.maxLogcatBytes,
+      device: this.device,
+      streams: this.streams,
+      captureScreenshot: (targetPath, evidenceSignal) => this.streams.captureScreenshot(
+        runId,
+        targetPath,
+        evidenceSignal,
+      ),
+      now: this.dependencies.now,
+    })
 
     const update = (phase: DeviceRunPhase, progress: number, message: string) => {
       currentPhase = phase
@@ -397,11 +411,16 @@ export class AdbRunExecutor {
       )
     } catch (error) {
       const cancelled = signal.aborted || this.database.isCancelled(taskId)
+      const failureEvidenceRefs = await evidenceRecorder.captureFailure({
+        phase: currentPhase,
+        error,
+        cancelled,
+      }).catch(() => [])
       const failure = executionFailureFromError({
         error,
         phase: currentPhase,
         cancelled,
-        evidenceRefs: ['attempt-manifest.json'],
+        evidenceRefs: ['attempt-manifest.json', ...failureEvidenceRefs],
       })
       if (!cancelled) {
         const mediaFailure = failure.code.startsWith('MEDIA_')

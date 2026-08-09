@@ -148,6 +148,9 @@ class FakeDevice implements AdbExecutionDevice {
       return result(0, 'package:com.android.permissioncontroller')
     }
     if (args[0] === 'shell' && args[1] === 'input') return result(0, 'Usage: input <command>')
+    if (args[0] === 'exec-out' && args[1] === 'uiautomator') {
+      return result(0, '<?xml version="1.0"?><hierarchy rotation="0"></hierarchy>')
+    }
     return result()
   }
 
@@ -175,7 +178,7 @@ function createStreams(setHandler: (handler: (line: string) => void) => void): A
       setHandler(handler)
       return async () => undefined
     },
-    async captureLogcatSnapshot() { return undefined },
+    async captureLogcatSnapshot(_taskId, targetPath) { await writeFile(targetPath, 'full logcat') },
     async captureScreenshot(_taskId, targetPath) { await writeFile(targetPath, 'png') },
   }
 }
@@ -274,6 +277,35 @@ describe('AdbRunExecutor cross-module seam', () => {
       inputAutomationCommandAvailable: true,
       observationFailures: [],
     })
+    expect(JSON.parse(await readFile(
+      path.join(evidenceDirectory, 'diagnostics/failure/failure-context.json'),
+      'utf8',
+    ))).toMatchObject({
+      capturedAt: '2026-08-09T01:02:03.000Z',
+      phase: 'validating_apk',
+      cancelled: false,
+      error: { code: 'APK_INSTALL_FAILED', message: 'stop after manifest seam' },
+    })
+    expect(await readFile(path.join(evidenceDirectory, 'diagnostics/failure/window.txt'), 'utf8'))
+      .toContain('com.example/.MainActivity')
+    expect(await readFile(path.join(evidenceDirectory, 'diagnostics/failure/ui.xml'), 'utf8'))
+      .toContain('<hierarchy')
+    expect(await readFile(path.join(evidenceDirectory, 'diagnostics/failure/screenshot.png'), 'utf8'))
+      .toBe('png')
+    expect(await readFile(path.join(evidenceDirectory, 'diagnostics/failure/logcat-full.txt'), 'utf8'))
+      .toBe('full logcat')
+    const failureEvidenceRefs = database.getTask(execution.taskId)?.runs['device-1'].failure?.evidenceRefs ?? []
+    for (const evidenceRef of [
+      'attempt-manifest.json',
+      'diagnostics/failure/failure-context.json',
+      'diagnostics/failure/window.txt',
+      'diagnostics/failure/ui.xml',
+      'diagnostics/failure/screenshot.png',
+      'diagnostics/failure/logcat-full.txt',
+      'diagnostics/failure/evidence-capture-result.json',
+    ]) {
+      expect(failureEvidenceRefs.some((ref) => ref.endsWith(`/evidence/${evidenceRef}`))).toBe(true)
+    }
   })
 
   it('keeps the initial manifest when the device is offline', async () => {
