@@ -6,6 +6,7 @@ import { TaskExecutionError } from '../execution-errors.js'
 import { delay } from '../file-utils.js'
 import { TaskProcessRegistry } from '../process-registry.js'
 import { ApkInstallCoordinator } from './apk-install-coordinator.js'
+import { ApplicationPreparationEvidenceRecorder } from './application-preparation-evidence-recorder.js'
 import type {
   AndroidAppPreparer,
   AndroidAppPreparationReceipt,
@@ -50,12 +51,16 @@ export class DefaultAndroidAppPreparer implements AndroidAppPreparer {
     const captureScreenshot = this.dependencies.captureScreenshot
       ?? this.createScreenshotCapture(request.deviceSerial)
     const readiness = new AndroidDeviceReadiness(device)
+    const preparationEvidence = new ApplicationPreparationEvidenceRecorder({
+      diagnosticsDirectory: request.diagnosticsDirectory,
+      captureScreenshot,
+    })
     // The controller is a stateless observation/action adapter. Temporal
     // interaction state belongs to each phase coordinator, so one adapter can
     // safely serve install, runtime-permission, and post-launch phases without
     // leaking action counts or fingerprints between them.
-    const dialogs = new SystemDialogController(device, captureScreenshot)
-    const installer = new ApkInstallCoordinator(device, dialogs)
+    const dialogs = new SystemDialogController(device, captureScreenshot, preparationEvidence)
+    const installer = new ApkInstallCoordinator(device, dialogs, preparationEvidence)
     const permissions = new RuntimePermissionManager(device)
     const permissionDialogs = new RuntimePermissionDialogCoordinator(permissions, dialogs)
     const postLaunchDialogs = new PostLaunchDialogCoordinator(dialogs)

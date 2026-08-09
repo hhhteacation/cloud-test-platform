@@ -2,6 +2,7 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 
 import { TaskExecutionError } from '../execution-errors.js'
+import type { ApplicationPreparationEvidenceRecorder } from './application-preparation-evidence-recorder.js'
 import type {
   AndroidPreparationDevice,
   DiagnosticScreenshotCapture,
@@ -143,6 +144,7 @@ export class SystemDialogController {
   constructor(
     private readonly device: AndroidPreparationDevice,
     private readonly captureScreenshot: DiagnosticScreenshotCapture,
+    private readonly evidence?: ApplicationPreparationEvidenceRecorder,
   ) {}
 
   async inspectAndHandle(
@@ -158,14 +160,14 @@ export class SystemDialogController {
     const xml = await this.readUiXml(options.signal, 'INSTALL_DIALOG_UNRECOGNIZED')
     const nodes = parseUiNodes(xml)
     if (!xml || !nodes.length) {
-      return {
+      return this.attachEvidence(options, window, xml, {
         kind: 'unrecognized',
         signature: buildUnrecognizedSignature(
           focusedWindowPackage,
           window.focusedWindowComponent,
           `${focusedWindowPackage}:ui-hierarchy-unavailable`,
         ),
-      }
+      })
     }
 
     const trustedSystemPackage = await this.isTrustedSystemPackage(focusedWindowPackage, options.signal)
@@ -196,7 +198,7 @@ export class SystemDialogController {
     const decision = evaluateDialogProfiles(options.profileIds, matchContext)
     if (decision.kind === 'block') {
       await this.saveDiagnostics(options.diagnosticsDirectory, window.diagnosticsText, xml, options.signal)
-      return {
+      return this.attachEvidence(options, window, xml, {
         kind: 'manual-action-required',
         block: decision.block,
         signature: buildManualActionSignature(
@@ -204,18 +206,18 @@ export class SystemDialogController {
           window.focusedWindowComponent,
           pageFingerprint,
         ),
-      }
+      })
     }
 
     if (decision.kind === 'none') {
-      return {
+      return this.attachEvidence(options, window, xml, {
         kind: 'unrecognized',
         signature: buildUnrecognizedSignature(
           focusedWindowPackage,
           window.focusedWindowComponent,
           pageFingerprint,
         ),
-      }
+      })
     }
 
     const match = decision.action
@@ -262,11 +264,11 @@ export class SystemDialogController {
       // verified as a state transition. It is not, by itself, an unknown
       // page or a terminal installation failure. The coordinator owns the
       // grace/timeout decision; this module must not preempt it.
-      return {
+      return this.attachEvidence(options, window, xml, {
         kind: 'waiting',
         signature: progressSignature,
         reason: 'action-awaiting-transition',
-      }
+      })
     }
 
     if (!interactionState.canPerformAction(options.maxActions)) {
@@ -297,7 +299,7 @@ export class SystemDialogController {
     }
     interactionState.recordAction(fingerprint)
 
-    return {
+    return this.attachEvidence(options, window, xml, {
       kind: 'handled',
       signature: progressSignature,
       dialog: {
@@ -305,7 +307,27 @@ export class SystemDialogController {
         action: match.action,
         timestamp: new Date().toISOString(),
       },
-    }
+    })
+  }
+
+  private async attachEvidence<T extends DialogInspectionResult>(
+    options: DialogInspectionOptions,
+    window: WindowSnapshot,
+    uiXml: string,
+    inspection: T,
+  ): Promise<T> {
+    const focusedWindowPackage = window.focusedWindowPackage
+    if (!this.evidence || !focusedWindowPackage) return inspection
+    const evidenceDirectory = await this.evidence.recordDialogObservation({
+      phase: options.phase,
+      focusedWindowPackage,
+      focusedWindowComponent: window.focusedWindowComponent,
+      currentWindow: window.diagnosticsText,
+      uiXml,
+      inspection,
+      signal: options.signal,
+    })
+    return evidenceDirectory ? { ...inspection, evidenceDirectory } : inspection
   }
 
   async saveTimeoutDiagnostics(options: DialogInspectionOptions) {

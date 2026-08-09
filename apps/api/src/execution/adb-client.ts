@@ -86,6 +86,9 @@ export class AdbDeviceClient {
           ? `${processContext}：${detail.trim()}`
           : `${processContext}：${error instanceof Error ? error.message : String(error)}（命令没有返回 stdout/stderr）`,
         code,
+        {
+          processResult: error instanceof ProcessError ? error.result : undefined,
+        },
       )
     }
   }

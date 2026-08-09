@@ -1,5 +1,6 @@
 import { buildInstallPlan, type ApkDialogAutomationConfig } from '../../apk-protocols.js'
 import { TaskExecutionError } from '../execution-errors.js'
+import type { ApplicationPreparationEvidenceRecorder } from './application-preparation-evidence-recorder.js'
 import { delay } from '../file-utils.js'
 import type {
   AndroidPreparationDevice,
@@ -67,6 +68,7 @@ export class ApkInstallCoordinator {
   constructor(
     private readonly device: AndroidPreparationDevice,
     private readonly dialogs: SystemDialogController,
+    private readonly evidence?: ApplicationPreparationEvidenceRecorder,
   ) {}
 
   async install(request: InstallRequest) {
@@ -83,11 +85,11 @@ export class ApkInstallCoordinator {
           progress: 12,
           message: '正在干净卸载旧版本 APK 和旧应用数据',
         })
-        await this.device.run(
+        await this.runRecordedCommand(
+          'uninstall',
           ['uninstall', installPlan.uninstallPackage],
           request.signal,
           60_000,
-          'APK_INSTALL_FAILED',
         )
       } else {
         request.onEvent({
@@ -106,11 +108,11 @@ export class ApkInstallCoordinator {
 
     if (!request.automation || request.automation.mode === 'none') {
       try {
-        await this.device.run(
+        await this.runRecordedCommand(
+          'install',
           installPlan.installArguments,
           request.signal,
           120_000,
-          'APK_INSTALL_FAILED',
         )
       } catch (error) {
         throw explainInstallFailure(error)
@@ -119,6 +121,37 @@ export class ApkInstallCoordinator {
     }
 
     return this.installWithDialogMonitoring(request, installPlan.installArguments, request.automation)
+  }
+
+  private async runRecordedCommand(
+    operation: 'install' | 'uninstall',
+    args: string[],
+    signal: AbortSignal,
+    timeoutMs: number,
+  ) {
+    const startedAt = new Date()
+    try {
+      const result = await this.device.run(args, signal, timeoutMs, 'APK_INSTALL_FAILED')
+      await this.evidence?.recordCommand({
+        phase: 'install',
+        operation,
+        args,
+        startedAt,
+        finishedAt: new Date(),
+        result,
+      })
+      return result
+    } catch (error) {
+      await this.evidence?.recordCommand({
+        phase: 'install',
+        operation,
+        args,
+        startedAt,
+        finishedAt: new Date(),
+        error,
+      })
+      throw error
+    }
   }
 
   private async installWithDialogMonitoring(
@@ -134,11 +167,11 @@ export class ApkInstallCoordinator {
       stalledAfterMs: unrecognizedGraceMs,
     })
 
-    const installOutcome = this.device.run(
+    const installOutcome = this.runRecordedCommand(
+      'install',
       installArguments,
       installController.signal,
       automation.timeoutMs + 10_000,
-      'APK_INSTALL_FAILED',
     ).then<InstallOutcome>(() => ({ ok: true })).catch<InstallOutcome>((error) => ({ ok: false, error }))
 
     const inspectionOptions: DialogInspectionOptions = {
@@ -153,10 +186,17 @@ export class ApkInstallCoordinator {
       phase: 'install',
     }
 
-    const observeInspection = (
+    let lastEvidenceDirectory: string | undefined
+    const observeInspection = async (
       inspection: Awaited<ReturnType<SystemDialogController['inspectAndHandle']>>,
     ) => {
       const observation = dialogPhase.observe(inspection)
+      lastEvidenceDirectory = inspection.evidenceDirectory ?? lastEvidenceDirectory
+      await this.evidence?.recordTransition(lastEvidenceDirectory, {
+        phase: 'install',
+        inspection,
+        observation,
+      })
       if (inspection.kind === 'handled') {
         request.onEvent({
           phase: 'handling_install_dialog',
@@ -204,7 +244,7 @@ export class ApkInstallCoordinator {
           inspectionOptions,
           dialogPhase.interactionState(),
         )
-        const observed = observeInspection(inspection)
+        const observed = await observeInspection(inspection)
         if (observed.accepted) continue
 
         if (inspection.kind === 'unrecognized' || inspection.kind === 'waiting') {
@@ -227,7 +267,7 @@ export class ApkInstallCoordinator {
               inspectionOptions,
               dialogPhase.interactionState(),
             )
-            const finalObserved = observeInspection(finalInspection)
+            const finalObserved = await observeInspection(finalInspection)
             if (finalObserved.accepted || finalInspection.kind === 'none') continue
             if (finalInspection.kind === 'unrecognized' || finalInspection.kind === 'waiting') {
               if (!finalObserved.observation.stable) continue

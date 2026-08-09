@@ -31,7 +31,9 @@ export interface InstallProgressSignature {
   }
 }
 
-export type DialogInspectionResult =
+export type DialogInspectionResult = ({
+  evidenceDirectory?: string
+} & (
   | { kind: 'none' }
   | {
     kind: 'handled'
@@ -52,6 +54,7 @@ export type DialogInspectionResult =
     signature: InstallProgressSignature
     reason: 'action-awaiting-transition'
   }
+))
 
 /**
  * Converts the structured signature into a stable comparison key. Keeping
