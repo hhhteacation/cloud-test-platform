@@ -1,5 +1,15 @@
 # SDK 视频兼容性测试平台（Phase 0 治理中）
 
+> **当前正式开发基线（2026-08-10）**
+>
+> - 开发目录：`/Users/hanzhen/Documents/cloud-test-platform`
+> - 分支：`main`
+> - 稳定 commit：`3bd41668f0177121a7e6899d4cc771ce1944e6cd`
+> - 稳定标签：`baseline/pkr110-stabilized-2026-08-09`
+> - 历史混合工作树：`/Users/hanzhen/Documents/云测试的项目`，仅用于追溯和按业务切片迁移，不作为开发目录
+> - 当前基线的验证范围和未完成机型 Gate，见 [`docs/当前稳定基线状态-2026-08-10.md`](docs/当前稳定基线状态-2026-08-10.md)。
+
+
 这是一个**模块化单体**的本地 Android SDK 视频兼容性测试平台。当前阶段的目标不是增加网络 ADB、账号或新平台，而是先把现有 Android USB 真机流程治理稳定，让后续一期可以安全地扩展到 8 台 Android 真机的 USB 与受控网络 ADB 双连接。
 
 ## 当前边界

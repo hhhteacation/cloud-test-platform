@@ -1,10 +1,25 @@
 # 项目交接文档：Android 真机自动化稳定性修复
 
-> 更新时间：2026-08-05（Asia/Shanghai）
-> 项目根目录：`/Users/hanzhen/Documents/云测试的项目`
-> 当前分支：`main`
-> 当前 HEAD：`bdf9003`（`chore: establish phase 0 baseline`）
+> 文档性质：本文件起源于 2026-08-05 的混合工作树排障记录。历史章节仍保留当时的现场、判断和文件路径；当前正式开发状态以 `docs/当前稳定基线状态-2026-08-10.md` 为准。
+> 更新时间：2026-08-10（Asia/Shanghai）
+> 正式开发目录：`/Users/hanzhen/Documents/cloud-test-platform`
+> 当前正式分支：`main`
+> 当前正式基线：`3bd41668f0177121a7e6899d4cc771ce1944e6cd`
+> 稳定标签：`baseline/pkr110-stabilized-2026-08-09`
+> 历史混合工作树：`/Users/hanzhen/Documents/云测试的项目`（只读归档，不作为日常开发目录）
 > 交接对象：完全没有本会话上下文的新 Codex 会话
+
+## 当前正式开发规则（2026-08-10）
+
+- 日常开发只在 `/Users/hanzhen/Documents/cloud-test-platform` 的 clean `main` 中进行。
+- 不要在历史混合目录继续修改，也不要把该目录的全部 working tree 直接搬运或合并到 `main`。
+- 旧目录用于查阅和按业务切片重新评审剩余需求；需要迁移的改动必须单独形成可构建、可测试、可回退的提交。
+- 本基线已完成记录中的自动化/构建和 PKR110 Gate，但不能外推为 V2324A、荣耀 X50、PJV110 或所有 OEM/ROM 均已稳定。
+- GitHub remote 已配置为 `git@github.com:18889627163-max/cloud-test-platform.git`；远端实时状态仍需在 SSH 认证恢复后用 `git ls-remote` 或 `git fetch` 确认。
+
+---
+
+**以下章节是历史排障上下文，不应覆盖上面的当前状态。**
 
 ---
 
@@ -13,8 +28,9 @@
 先执行只读检查：
 
 ```bash
-cd '/Users/hanzhen/Documents/云测试的项目'
-git status --short
+cd '/Users/hanzhen/Documents/cloud-test-platform'
+git status --short --branch
+git rev-parse HEAD
 git diff --check
 git diff -- apps/api/src/adb.ts \
   apps/api/src/apk-protocols.ts \
@@ -448,7 +464,7 @@ SDK 处理耗时
 
 ---
 
-## 4. 当前验证状态
+## 4. 历史验证快照（2026-08-05；不代表当前正式基线的完整门禁）
 
 最近一次代码级验证结果（2026-08-05）：
 
@@ -507,7 +523,7 @@ git diff --check
 
 ---
 
-## 5. 当前卡在哪里
+## 5. 历史现场阻塞（保留用于追溯）
 
 代码实现和自动化测试已经完成，目前没有已知 TypeScript/构建阻塞。真正的阻塞是**缺少最新真机无人值守回归结果**。
 
@@ -524,7 +540,7 @@ Mate X5 曾出现“卡在 SDK 流程”，但随后单独重测又可以自动�
 
 ---
 
-## 6. 下一步计划
+## 6. 历史下一步计划（部分已由后续稳定化链完成）
 
 ## 6.1 Mate X5 真机验收
 
@@ -685,9 +701,9 @@ Morpho 启动状态已经合并为一次 shell Probe。拆开会增加 Network A
 
 全局仍是 256 MiB。本次只在业务日志和失败快照调用点使用最多 16 MiB 的局部限制，不能影响普通 ADB 命令、push、pull、截图和 UI XML。
 
-### 8.15 不要破坏工作区中的混合改动
+### 8.15 历史混合工作树处理规则
 
-当前仓库大量文件同时存在 staged/unstaged 内容。新会话必须按文件、按 hunk 审查，不能用全仓恢复或全仓暂存。尤其不要顺手修改与本任务无关的文档尾随空格、依赖或框架配置。
+以下规则针对旧目录 `/Users/hanzhen/Documents/云测试的项目` 的历史现场。当前正式开发目录已经 clean，不应把旧目录的 staged/unstaged/untracked 内容整体带回 `main`。如需迁移其中需求，必须按文件、按 hunk、按业务切片审查，尤其不要顺手修改与目标任务无关的文档、依赖或框架配置。
 
 ---
 
