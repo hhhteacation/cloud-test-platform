@@ -1,730 +1,736 @@
-# 项目交接文档：Android 真机自动化稳定性修复
+# 云测试平台稳定化与历史数据迁移交接文档
 
-> 文档性质：本文件起源于 2026-08-05 的混合工作树排障记录。历史章节仍保留当时的现场、判断和文件路径；当前正式开发状态以 `docs/当前稳定基线状态-2026-08-10.md` 为准。
-> 更新时间：2026-08-10（Asia/Shanghai）
-> 正式开发目录：`/Users/hanzhen/Documents/cloud-test-platform`
-> 当前正式分支：`main`
-> 当前正式基线：`3bd41668f0177121a7e6899d4cc771ce1944e6cd`
-> 稳定标签：`baseline/pkr110-stabilized-2026-08-09`
-> 历史混合工作树：`/Users/hanzhen/Documents/云测试的项目`（只读归档，不作为日常开发目录）
-> 交接对象：完全没有本会话上下文的新 Codex 会话
-
-## 当前正式开发规则（2026-08-10）
-
-- 日常开发只在 `/Users/hanzhen/Documents/cloud-test-platform` 的 clean `main` 中进行。
-- 不要在历史混合目录继续修改，也不要把该目录的全部 working tree 直接搬运或合并到 `main`。
-- 旧目录用于查阅和按业务切片重新评审剩余需求；需要迁移的改动必须单独形成可构建、可测试、可回退的提交。
-- 本基线已完成记录中的自动化/构建和 PKR110 Gate，但不能外推为 V2324A、荣耀 X50、PJV110 或所有 OEM/ROM 均已稳定。
-- GitHub remote 已配置为 `git@github.com:18889627163-max/cloud-test-platform.git`；远端实时状态仍需在 SSH 认证恢复后用 `git ls-remote` 或 `git fetch` 确认。
+> 生成时间：2026-08-10（Asia/Shanghai）  
+> 目标读者：完全没有此前会话上下文的新会话/新维护者  
+> 当前文档位置：`/Users/hanzhen/Documents/cloud-test-platform/HANDOFF.md`
 
 ---
 
-**以下章节是历史排障上下文，不应覆盖上面的当前状态。**
+## 0. 最重要的结论与警告
 
----
+### 请先确认当前会话位于正式开发目录
 
-## 0. 接手后第一件事
+需要特别识别的旧工作区：
 
-先执行只读检查：
+```text
+/Users/hanzhen/Documents/云测试的项目
+```
+
+是旧的归档混合工作树，当前分支为：
+
+```text
+archive/main-mixed-worktree-2026-08-09
+```
+
+这里仍有大量 staged、unstaged、untracked 混合改动。**不要在这里继续开发、整理提交、整体合并或推送为正式 main。**
+
+正式代码仓库是：
+
+```text
+/Users/hanzhen/Documents/cloud-test-platform
+```
+
+独立运行数据目录是：
+
+```text
+/Users/hanzhen/Documents/cloud-test-data
+```
+
+新会话开始工作的第一条命令应当是：
 
 ```bash
-cd '/Users/hanzhen/Documents/cloud-test-platform'
+cd /Users/hanzhen/Documents/cloud-test-platform
+```
+
+然后确认：
+
+```bash
 git status --short --branch
 git rev-parse HEAD
-git diff --check
-git diff -- apps/api/src/adb.ts \
-  apps/api/src/apk-protocols.ts \
-  apps/api/src/execution/adb-streams.ts \
-  apps/api/src/execution/morpho-startup.ts \
-  apps/api/src/execution/android-app-preparation
+git remote -v
 ```
 
-**不要先执行任何恢复、清理、格式化或暂存操作。** 当前工作区有大量跨阶段、跨任务的已暂存和未暂存改动；不少文件是 `MM` 状态，说明同一文件同时包含已暂存旧改动和未暂存新改动。
+截至本交接文档生成时，正式仓库状态为：
 
-绝对禁止在没有逐文件确认归属前执行：
+```text
+branch: main
+HEAD: c538f36f25557ecef90ef453bb0ea86974befd90
+status: clean，且本地显示 main 与 origin/main 对齐
+origin: git@github.com:18889627163-max/cloud-test-platform.git
+```
+
+注意：本地引用显示 `origin/main` 已对齐，但此前曾发生过 GitHub SSH `Permission denied (publickey)`。下次真正 fetch/push 前仍应运行 `ssh -T git@github.com` 或 `git fetch origin` 重新确认当前 SSH 凭据，不要仅凭本地 remote-tracking ref 推断网络认证一定正常。
+
+---
+
+## 1. 我们在做什么任务
+
+项目此前为了追求高内聚、低耦合、扩展性和维护性，引入了很多按“技术动作”拆分的小模块，但没有始终形成少数稳定、职责完整的业务深模块。结果是复杂度通过以下隐式关系泄漏回主流程：
+
+- 共享状态；
+- 调用顺序；
+- 页面识别与状态机判断不一致；
+- Controller、Coordinator、Profile 对同一页面语义理解不同；
+- 错误优先级和 Evidence 语义不一致；
+- 单模块修改没有同步对齐调用方、接口、状态、时序和测试；
+- 混合工作树使问题无法可靠归因、回退和验证。
+
+用户真正的目标不是简单减少文件数量，而是：
+
+1. 恢复项目稳定性和版本可追溯性；
+2. 建立少数稳定的业务深模块；
+3. 新增机型尽量只修改 Profile、Adapter 和 fixture；
+4. 一次业务修改同时对齐 Interface、状态、时序、错误、Evidence 和测试；
+5. 问题可以定位、回放、验证和独立回退；
+6. 代码和历史运行数据彻底脱离旧混合工作树。
+
+采用的路线是“方案 A：稳定优先、分阶段治理”：
+
+```text
+S0 冻结版本和运行证据
+→ S1 PKR110/OPlus 主链验证
+→ S2 收敛 ApplicationPreparation 状态机
+→ S3 收敛 MorphoProtocolExecutor
+→ S4 统一 Failure、Evidence 和兼容迁移
+→ S5 建立新正式基线
+→ 将历史运行数据迁移到独立永久数据目录
+```
+
+---
+
+## 2. 用户沟通原则
+
+后续会话必须遵守：
+
+- 不要把用户的猜测当成事实；
+- 不确定时明确写“不确定”以及需要什么证据才能确认；
+- 先区分用户的问题、情绪和隐含目标；
+- 如果存在多种理解，先列出不同理解；
+- 不要为了显得完整而编造确定结论；
+- 用户说“你没理解我”时，先重述用户意图，不要急着辩解；
+- 如果用户是在探索，不要过早给出唯一结论；
+- 涉及运行结果时，区分“自动化/fixture 通过”“历史真机通过”“当前真机重新验收通过”。
+
+---
+
+## 3. 已经完成的代码稳定化工作
+
+正式仓库中已经形成一条干净、按业务切片提交的稳定化链。关键提交包括：
+
+```text
+1b1f945 feat: record attempt identity and evidence manifest
+6c31d15 refactor: centralize android preparation decisions
+cd0d90a test: verify android preparation transitions across phases
+63ffd8c refactor: encapsulate morpho protocol execution
+3e46c63 feat: introduce structured execution failures
+e36f3bd feat: expose execution evidence compatibly
+d6d97ed fix: observe runtime dialog before timeout
+ac2b790 feat: capture terminal attempt failure evidence
+9327bf5 feat: record android preparation transition evidence
+8324909 test: capture pkr110 oplus install guide
+96d3994 feat: record permission and post-launch transitions
+a74b5cb test: add installed-state protocol gate harness
+3bd4166 docs: record stabilized baseline and device gates
+c538f36 docs: align project status with stabilized baseline
+```
+
+归档/基线标记：
+
+```text
+archive/main-mixed-checkpoint-2026-08-07 -> 3f70307
+archive/main-head-2026-08-09          -> bdf9003
+baseline/pkr110-stabilized-2026-08-09 -> 3bd4166
+当前正式 main                            -> c538f36
+```
+
+从提交历史可以确认已经实施的方向：
+
+- Attempt Manifest 与运行 Evidence 身份关联；
+- Android ApplicationPreparation 决策集中化；
+- 页面动作之后的 transition observation；
+- 安装、权限、post-launch 跨 phase 测试；
+- Morpho 协议执行从 TaskOrchestrator 中封装；
+- 结构化 ExecutionFailure；
+- 新旧 Failure/Evidence 兼容暴露；
+- PKR110/OPlus 安装引导 fixture；
+- 已安装状态协议 Gate harness；
+- 稳定化基线与设备 Gate 文档。
+
+但不要把“代码中存在这些提交”扩大解释成“所有机型、所有系统版本都已经真机稳定”。已确认事实和未完成项见后文。
+
+---
+
+## 4. 历史数据迁移已经完成
+
+### 4.1 目录结构
+
+旧数据源（保留，未删除、未覆盖）：
+
+```text
+/Users/hanzhen/Documents/云测试的项目/data
+```
+
+正式代码：
+
+```text
+/Users/hanzhen/Documents/cloud-test-platform
+```
+
+独立数据：
+
+```text
+/Users/hanzhen/Documents/cloud-test-data
+```
+
+代码和数据现在是同级独立目录。这是设计目标，不是异常：
+
+```text
+/Users/hanzhen/Documents/
+├── cloud-test-platform/   # Git 代码
+├── cloud-test-data/       # SQLite、artifacts、tasks、历史证据
+└── 云测试的项目/          # 旧混合工作树，暂时只读保留
+```
+
+### 4.2 运行配置
+
+本机配置：
+
+```text
+/Users/hanzhen/Documents/cloud-test-platform/.env.local
+```
+
+内容：
+
+```dotenv
+CLOUD_TEST_DATA_DIR=/Users/hanzhen/Documents/cloud-test-data
+```
+
+`.env.local` 被 Git 忽略，不应提交 GitHub。
+
+### 4.3 数据库验证
+
+迁移后的数据库：
+
+```text
+/Users/hanzhen/Documents/cloud-test-data/cloud-test.sqlite
+```
+
+验证结果：
+
+```text
+PRAGMA quick_check: ok
+foreign_key_check violations: 0
+```
+
+表数据数量：
+
+| 表/业务数据 | 数量 |
+|---|---:|
+| devices | 9 |
+| device_endpoints | 18 |
+| tasks | 38 |
+| device_runs | 102 |
+| task_logs | 2332 |
+| artifacts | 107 |
+| task_outputs | 68 |
+| check_results | 348 |
+| task_deletion_audits | 54 |
+
+### 4.4 绝对路径迁移
+
+旧前缀：
+
+```text
+/Users/hanzhen/Documents/云测试的项目/data
+```
+
+新前缀：
+
+```text
+/Users/hanzhen/Documents/cloud-test-data
+```
+
+事务性修改结果：
+
+```text
+artifacts.storage_path 更新：107
+ task_outputs.storage_path 更新：68
+旧 Artifact 前缀剩余：0
+新 Artifact 前缀记录：107
+旧输出前缀剩余：0
+新输出前缀记录：68
+```
+
+### 4.5 文件完整性
+
+已经通过“相对路径 + 字节数 + SHA-256”验证：
+
+- Artifact：107 个，全部存在，大小一致，SHA-256 一致；
+- Task Output：68 条，全部存在，大小一致，SHA-256 一致；
+- `artifacts/`：107 个文件内容一致；
+- `tasks/`：360 个文件内容一致；
+- `legacy-evidence/manual-device-validation/`：196 个文件内容一致；
+- `legacy-evidence/recovery/`：55 个文件内容一致。
+
+恢复工具没有保留文件 mtime，因此时间戳差异不是内容损坏。不得因为 `rsync` 只报告 `.f..T....` 就重新复制或覆盖数据。
+
+### 4.6 迁移清单
+
+完整记录：
+
+```text
+/Users/hanzhen/Documents/cloud-test-data/migration-manifest.json
+```
+
+关键状态：
+
+```text
+status: validated
+pathRebase.passed: true
+apiValidation.passed: true
+runtimeConfiguration.gitWorktreeClean: true
+```
+
+注意 `gitWorktreeClean` 位于 `runtimeConfiguration` 下，不是顶层字段。
+
+---
+
+## 5. API 验证已完成
+
+截至 2026-08-10 交接时，3000 端口有 Node API 监听。最后观察到的 PID 为：
+
+```text
+12061
+```
+
+PID 会变化，不要把它当作永久配置。新会话应重新运行：
 
 ```bash
-git reset
+lsof -nP -iTCP:3000 -sTCP:LISTEN
+curl -sS http://127.0.0.1:3000/api/health
+```
+
+已完成的 API Gate：
+
+```text
+GET /api/health                     200
+GET /api/devices                    200
+GET /api/tasks                      200
+GET /api/tasks/:id                  200
+GET /api/tasks/:id/report           200
+GET /api/artifacts/:id              200
+Artifact Range                      206
+Output Content Range                206
+Output Download Range               206
+历史 Logcat                         200
+历史 Screenshot                     200
+历史 Evidence result.json           200
+```
+
+最后记录的健康状态：
+
+```text
+registered devices: 9
+online devices: 6
+```
+
+`online` 是动态 ADB 状态，不要求永久为 6；迁移验收的固定事实是注册设备为 9。
+
+历史任务：
+
+```text
+总数：38
+passed：17
+failed：19
+cancelled：2
+```
+
+抽样任务：
+
+```text
+成功任务：task-b4068a16-b1db-4cdd-85b1-b0c9dfb6cde2
+失败任务：task-fe25760c-26a0-444e-8224-a6dc000cfb48
+输出样本：output-84110599-3c70-4d1d-a725-de331412f5d8
+```
+
+验证时 API 使用的是：
+
+```text
+/Users/hanzhen/Documents/cloud-test-data/cloud-test.sqlite
+```
+
+没有使用：
+
+```text
+/Users/hanzhen/Documents/云测试的项目/data/cloud-test.sqlite
+/Users/hanzhen/Documents/cloud-test-platform/data/cloud-test.sqlite
+```
+
+---
+
+## 6. 回退点：全部必须继续保留
+
+### 新仓库原空库备份
+
+```text
+/Users/hanzhen/Documents/cloud-test-platform/data/backups/cloud-test-2026-08-10T04-30-12-070Z
+```
+
+### 旧数据一致性备份
+
+```text
+/Users/hanzhen/Documents/云测试的项目/data/backups/cloud-test-2026-08-10T04-30-19-214Z
+```
+
+这是通过项目 SQLite Backup API 生成的一致性备份，包含数据库以及 `artifacts/`、`tasks/`。
+
+### 路径重写前数据库备份
+
+```text
+/Users/hanzhen/Documents/cloud-test-data/migration-backups/pre-path-rebase.sqlite
+```
+
+### 旧原始数据
+
+```text
+/Users/hanzhen/Documents/云测试的项目/data
+```
+
+在迁移后的环境完成至少一次真实真机任务 smoke 验证前，以上内容都不能删除。
+
+---
+
+## 7. 当前卡在哪里 / 尚未完成什么
+
+目前没有阻止 API 读取历史数据的迁移故障；迁移已经验证通过。剩余的是稳定性验收和后续治理工作。
+
+### 7.1 尚未完成迁移后的真实任务写入 smoke
+
+已经验证历史数据“能读取”，但尚未在独立数据目录配置下创建一次新的真实真机任务，完整验证：
+
+```text
+创建任务
+→ 新建 Device Run
+→ 写日志
+→ 写 Evidence
+→ 生成 Artifact
+→ 生成任务输出
+→ 完成任务
+→ API 重新读取上述数据
+→ 确认所有新路径都位于 cloud-test-data
+```
+
+这是下一步最高优先级。
+
+### 7.2 `report:orphans` 存在已知误报
+
+当前：
+
+```bash
+npm run report:orphans
+```
+
+会错误地把数据库文件路径和目录路径直接比较，可能把已有的 107 个 Artifact 全部误报为孤儿。
+
+该脚本**不能作为当前数据清理或迁移 Gate**。在修复并增加测试前，不得根据它的结果删除任何文件。
+
+### 7.3 其他机型真机 Gate 未完成
+
+此前唯一明确可用的主目标机是：
+
+```text
+厂商：OnePlus
+型号：PKR110
+ADB 地址：192.168.5.3:5555
+```
+
+ADB 地址必须作为运行配置传入，不能写进 Profile 或公共业务逻辑。
+
+荣耀 X50、PJV110、V2324A、其他 OPPO/Vivo 机型目前不能仅凭 fixture 或历史规则宣称真机稳定。没有真机时只能写：
+
+```text
+自动化/fixture 回放通过，真机 Gate 未完成
+```
+
+### 7.4 GitHub SSH 需要在下一次推送前复核
+
+remote 已配置为：
+
+```text
+git@github.com:18889627163-max/cloud-test-platform.git
+```
+
+但历史会话中曾出现：
+
+```text
+git@github.com: Permission denied (publickey)
+```
+
+不要在未验证 SSH 的情况下承诺“已经可以继续推送”。先测试，再处理密钥或 ssh-agent。
+
+---
+
+## 8. 下一步执行计划（按优先级）
+
+### P0：迁移后真机 smoke Gate
+
+1. 进入正式仓库：
+
+   ```bash
+   cd /Users/hanzhen/Documents/cloud-test-platform
+   ```
+
+2. 确认 Git clean：
+
+   ```bash
+   git status --short --branch
+   ```
+
+3. 确认 `.env.local` 指向独立数据目录：
+
+   ```bash
+   grep '^CLOUD_TEST_DATA_DIR=' .env.local
+   ```
+
+4. 如果 3000 端口已有 API，先确认是不是正式仓库启动的进程，不要重复启动。
+5. 使用 PKR110 创建一次低风险真实任务。
+6. 检查新 Attempt Manifest、日志、Evidence、Artifact、Output。
+7. 检查数据库新增记录的绝对路径全部以以下目录开头：
+
+   ```text
+   /Users/hanzhen/Documents/cloud-test-data
+   ```
+
+8. 通过 API 重新读取该任务及文件。
+9. 将 smoke 结果写入新的运行记录或文档；失败时保存 Evidence，不要先加特例。
+
+### P1：修复 `report:orphans`
+
+要求以测试驱动方式修复：
+
+- 先建立“数据库已引用 Artifact 不应报孤儿”的失败测试；
+- 统一比较文件规范化绝对路径，或明确目录/文件语义；
+- 增加 Artifact、Task Output、临时文件和实际孤儿样本；
+- 默认只报告，不直接删除；
+- 删除功能如以后增加，必须有 dry-run、白名单和二次确认。
+
+### P2：继续执行 PKR110 稳定性 Gate
+
+同一 clean commit 下，目标仍应包括：
+
+- 5 次 clean-install 完整流程；
+- 3 次已安装状态重复执行；
+- 安装/权限阶段主动取消；
+- 启动/协议执行阶段主动取消；
+- 每次运行绑定 Attempt Manifest 和独立 Evidence；
+- 不通过扩大 timeout、通用文字匹配或固定坐标掩盖问题。
+
+如果这些 Gate 在此前已有运行证据，先定位并复核 Evidence，不要重复宣称或凭记忆补结论。
+
+### P3：其他机型扩展
+
+扩展顺序固定为：
+
+```text
+采集真实 Evidence
+→ 敏感信息清理
+→ 建立失败 fixture
+→ 修改 Profile/Adapter
+→ 完整跨 Seam 回归
+→ 真机复验
+```
+
+新增 Profile 不应修改 TaskOrchestrator。Profile 只负责页面事实、Signature、动作候选和风险声明；最终 timeout、stalled、transition 和业务 Decision 由 Coordinator/State Machine 持有。
+
+### P4：文档与日常开发纪律
+
+- 将正式 main 作为唯一开发基线；
+- 每个提交按业务切片，不按目录或技术层随意拆分；
+- 每个提交必须能独立构建、测试、解释和回退；
+- 修改一个业务行为时，同时检查 Interface、Profile、Controller、Coordinator、状态、错误、Evidence、API、前端和测试；
+- 禁止再次积累长期 staged/unstaged/untracked 混合改动。
+
+---
+
+## 9. 绝对不要再踩的坑
+
+### 9.1 不要在旧混合工作树继续开发
+
+禁止把：
+
+```text
+/Users/hanzhen/Documents/云测试的项目
+```
+
+当作新的正式 main。它现在有大量混合改动，无法可靠归因和回退。不要整体 cherry-pick、整体复制或整体合并它的 working tree。
+
+剩余需求如确实需要迁移，必须逐个按业务切片重新评审，并在正式仓库建立干净提交。
+
+### 9.2 不要执行破坏性 Git 清理
+
+在旧工作树和数据完成长期确认前，禁止：
+
+```bash
 git reset --hard
 git clean -fd
-git checkout -- .
-git restore .
-git add -A
-pnpm prettier --write .
 ```
 
-本轮没有执行 stage、commit、reset、clean，也没有创建分支。
+也不要强制覆盖 main 或删除归档分支/标签。
 
----
+### 9.3 不要直接复制正在使用或带 WAL 的 SQLite 主库
 
-## 1. 我们在做什么
-
-当前主任务是修复 Android 真机 APK 自动化流程中的三类问题，同时确保不影响数据库、前端框架、任务队列和其他厂商的安装弹窗逻辑：
-
-1. **服务健康检查误报与 ADB 重复扫描**
-   - API 实际在线，但健康接口因隐式 ADB 扫描或异常 Network Endpoint 被拖慢，前端误报“服务未启动”；
-   - `listRegistered()` 曾把“读取设备”与“真实发现设备”耦合；
-   - 首页轮询可能重复触发全量 ADB 扫描，增加 ADB daemon 压力。
-
-2. **小米 15 Pro / HyperOS 安装弹窗和输入权限问题**
-   - 需要严格识别 Morpho APK 的 HyperOS USB 安装确认页；
-   - 弹窗识别成功后，HyperOS 可能拒绝 `adb shell input tap`，错误为 `SecurityException / INJECT_EVENTS`；
-   - 该问题通常是设备没有真正开启或保留“USB 调试（安全设置）”，代码不能绕过系统安全策略。
-
-3. **整体自动化变慢、Mate X5 卡在 Morpho SDK 流程**
-   - 共享执行链路长期采集全量 Verbose Logcat，尤其会占用 Network ADB；
-   - 旧逻辑把 `am start` 成功当作 Morpho 业务已启动，实际服务没启动时仍可能进入最长 900 秒的无效处理等待；
-   - 最新一轮修复集中解决这一问题，**没有改 APK 安装协调器，也没有放宽任何厂商弹窗 Profile**。
-
-当前代码和静态测试已完成，**现在主要卡在 Mate X5、小米 15 Pro、荣耀 X50 以及 Network Endpoint 的真机回归验收**。
-
----
-
-## 2. 已经完成的内容
-
-## 2.1 健康检查与设备扫描解耦
-
-主要文件：
-
-- `/Users/hanzhen/Documents/云测试的项目/apps/api/src/devices/device-registry.ts`
-- `/Users/hanzhen/Documents/云测试的项目/apps/api/src/routes/device-routes.ts`
-- `/Users/hanzhen/Documents/云测试的项目/apps/api/src/routes/system-routes.ts`
-- `/Users/hanzhen/Documents/云测试的项目/web/src/layouts/serviceHealth.ts`
-- `/Users/hanzhen/Documents/云测试的项目/web/src/pages/DevicesPage.tsx`
-
-已实现：
-
-- `listRegisteredSnapshot(platform)`：只读取数据库中的设备、Endpoint 和队列快照，不执行 Provider/ADB，不写在线状态和 `lastSeen`；
-- `refreshRegistered(platform)`：执行真实设备发现和状态刷新；
-- 同一平台的并发全量刷新复用同一个 in-flight Promise，不把重复扫描排队；
-- `GET /api/devices` 使用快照读取；
-- `POST /api/devices/refresh` 执行真实刷新；
-- `/api/health` 使用轻量快照，不应因 ADB、FFmpeg 或异常 Network Endpoint 阻塞；
-- 设备页使用“快照 + 手动刷新”，刷新期间禁止重复点击；
-- 前端健康状态已经分层为：
+不能把以下三个文件简单复制后就宣称一致：
 
 ```text
-checking / online / slow / degraded / retrying / offline / mock
+cloud-test.sqlite
+cloud-test.sqlite-wal
+cloud-test.sqlite-shm
 ```
 
-判定约定：
+迁移必须先停止写入，再使用 SQLite Backup API 生成一致性副本。不要修改旧原库来“修”迁移副本。
 
-| 检查结果 | 前端状态 | 文案 |
+### 9.4 不要根据 `report:orphans` 当前结果删除文件
+
+该脚本有已知误报。当前可靠证据是数据库路径、文件大小和 SHA-256 校验，不是孤儿脚本输出。
+
+### 9.5 不要把时间戳差异当作内容损坏
+
+恢复后 mtime 可能变化。`rsync -rcn` 出现 `.f..T....` 只代表时间戳不同；内容判断使用 size + SHA-256。
+
+### 9.6 不要硬编码设备地址或机型特例到主流程
+
+例如：
+
+```text
+192.168.5.3:5555
+```
+
+只能进入运行配置，不能进入 Profile 或 TaskOrchestrator。出现 PKR110 新页面时，先保存 Evidence、建 fixture、改 Profile/Adapter，不在主流程加入 `if model === PKR110`。
+
+### 9.7 不要把 Profile 识别成功等同于流程成功
+
+典型历史问题：
+
+```text
+Profile 已经认识页面
+但 Controller/Coordinator 仍按旧规则把节点重复判断为卡死
+```
+
+因此每次修改必须验证完整链路：
+
+```text
+Profile 分类
+→ Controller 动作结果
+→ Coordinator transition observation
+→ waiting/stalled/timeout decision
+→ Failure/Evidence
+→ API/前端展示
+```
+
+### 9.8 不要继续按浅小模块堆叠复杂度
+
+高内聚低耦合不是“文件越多越好”。优先形成少数业务深模块，接口窄、内部封装复杂度。不要为每个技术动作增加一个拥有部分状态和部分错误决策的小模块。
+
+### 9.9 不要用扩大 timeout、通用文本匹配或固定坐标止痛
+
+这些方法可能短期绕过页面，但会让不同 OEM/系统版本之间的误点击和失败组合继续增加。观察失败也不能退化成“页面不存在”。
+
+### 9.10 不要让低级诊断失败覆盖业务事实
+
+遵守 Evidence 优先级：
+
+- 明确业务成功不能被截图/Logcat 失败覆盖；
+- 明确业务失败优先于观察不完整；
+- 观察失败不能伪装成“未发现”；
+- cleanup 失败作为附加失败，不无条件覆盖原始业务失败。
+
+### 9.11 不要移动数据目录却忘记 `.env.local`
+
+如果移动或重命名：
+
+```text
+/Users/hanzhen/Documents/cloud-test-data
+```
+
+必须同步修改 `.env.local`，并检查数据库中的 Artifact/Output 绝对路径。未经计划不要移动。
+
+### 9.12 不要重复启动 API
+
+启动前先检查：
+
+```bash
+lsof -nP -iTCP:3000 -sTCP:LISTEN
+```
+
+如果已有正确 API，不要再运行第二个 `npm run dev:api`，否则会出现端口占用，也可能误判当前数据源。
+
+### 9.13 不要删除回退点
+
+至少在迁移后真机 smoke 成功、并确认新写入路径和文件读取正常以前，旧数据和三类备份必须全部保留。
+
+---
+
+## 10. 新会话快速检查清单
+
+新会话接手后先执行，但不要立即改代码：
+
+```bash
+cd /Users/hanzhen/Documents/cloud-test-platform
+
+git status --short --branch
+git rev-parse HEAD
+git remote -v
+cat .env.local
+
+lsof -nP -iTCP:3000 -sTCP:LISTEN
+curl -sS http://127.0.0.1:3000/api/health
+
+python3 -m json.tool \
+  /Users/hanzhen/Documents/cloud-test-data/migration-manifest.json \
+  >/tmp/cloud-test-migration-manifest.pretty.json
+```
+
+期望基线：
+
+```text
+main clean
+HEAD = c538f36f25557ecef90ef453bb0ea86974befd90
+CLOUD_TEST_DATA_DIR=/Users/hanzhen/Documents/cloud-test-data
+migration status = validated
+registered devices = 9
+historical tasks = 38
+```
+
+如果任何值不同：
+
+1. 不要先修复或覆盖；
+2. 记录实际输出和具体时间；
+3. 区分是 API 未启动、ADB 在线状态变化、Git 基线变化，还是数据源配置变化；
+4. 对照 `migration-manifest.json` 和回退点定位差异。
+
+---
+
+## 11. 当前状态矩阵
+
+| 项目 | 状态 | 说明 |
 |---|---|---|
-| HTTP 2xx 且 3 秒内返回 | `online` | 服务正常 |
-| 超过 3 秒 | `slow` | 服务响应慢 |
-| HTTP 4xx/5xx | `degraded` | 服务异常 |
-| 第一次真实网络失败 | `retrying` | 正在重试 |
-| 连续第二次网络失败 | `offline` | 服务未连接 |
-
-重要现场结论：曾经有一次“服务失败”是**电脑/浏览器和服务所在设备连接了不同 Wi-Fi，处于不同局域网**。这种情况属于网络不可达，不是 API 内部异常。排查时先确认 IP、路由和 Wi-Fi，不要为了这个现象放宽健康检查或延长超时。
-
----
-
-## 2.2 小米 15 Pro / HyperOS 严格安装弹窗 Profile
-
-主要文件：
-
-- `/Users/hanzhen/Documents/云测试的项目/apps/api/src/execution/android-app-preparation/dialog-profiles.ts`
-- `/Users/hanzhen/Documents/云测试的项目/apps/api/src/apk-protocols.ts`
-- `/Users/hanzhen/Documents/云测试的项目/apps/api/src/execution/android-app-preparation/__fixtures__/xiaomi-hyperos-adb-install-confirmation.xml`
-
-工作区中已经存在：
-
-```text
-xiaomi-hyperos-package-installer-v1
-```
-
-该 Profile 只允许：
-
-- 厂商：Xiaomi、Redmi、POCO、小米、红米；
-- 当前安装 APK：`com.morphoinc.videopostprocessor`；
-- 窗口包：`com.miui.securitycenter`；
-- 精确 component：
-
-```text
-com.miui.securitycenter/com.miui.permcenter.install.AdbInstallActivity
-```
-
-- 页面同时具备真实采集到的 HyperOS 文案和 resource-id；
-- 点击目标只能是：
-
-```text
-resource-id=android:id/button2
-text=继续安装
-```
-
-Profile 保持：
-
-```ts
-allowUncheckedConfirmation: false
-```
-
-原因是页面上的“拒绝后下次安装不再提示”复选框不是风险确认框，不能自动勾选。
-
-该 Profile 只在 Morpho 协议的 `install.dialogAutomation.profileIds` 中启用，没有全局启用给其他 APK。
-
-**不要看到其他页面也有“安装”“继续”“允许”就放宽这个 Profile。** 如果小米点击后出现第二层未知弹窗，必须先采集窗口、XML、截图和系统包身份，再新增独立 Profile。
+| 正式代码仓库隔离 | 已完成 | `/Users/hanzhen/Documents/cloud-test-platform` |
+| 正式 main clean | 已确认 | HEAD `c538f36...` |
+| GitHub remote 配置 | 已完成 | SSH 当前连通性下次推送前复核 |
+| 稳定化提交链 | 已完成 | Attempt、状态机、Morpho、Failure、Evidence 等已进入 main |
+| 旧混合工作树归档 | 已完成但仍保留 | 不得作为正式开发目录 |
+| 历史 SQLite 一致性迁移 | 已完成 | quick_check 和外键检查通过 |
+| Artifact/Output 路径重写 | 已完成 | 107 / 68，旧前缀均为 0 |
+| 文件大小与 SHA-256 校验 | 已完成 | 全部通过 |
+| 历史设备和任务 API 读取 | 已完成 | 9 台设备、38 个任务 |
+| API 使用独立数据目录 | 已确认 | 未访问旧库/新仓库空库 |
+| 迁移后真实任务写入 smoke | 未完成 | 下一步最高优先级 |
+| `report:orphans` 修复 | 未完成 | 当前有已知误报，禁止作为删除依据 |
+| PKR110 完整重复真机 Gate | 需复核/继续 | 不要仅凭提交名宣称全部次数已完成 |
+| 荣耀/PJV110/V2324A 真机 Gate | 未完成 | fixture/自动化不能替代真机结论 |
 
 ---
 
-## 2.3 HyperOS 输入权限拒绝的准确分类
+## 12. 一句话交接
 
-主要文件：
-
-- `/Users/hanzhen/Documents/云测试的项目/apps/api/src/execution/android-app-preparation/input-automation-compatibility.ts`
-- `/Users/hanzhen/Documents/云测试的项目/apps/api/src/execution/android-app-preparation/device-readiness.ts`
-- `/Users/hanzhen/Documents/云测试的项目/apps/api/src/execution/android-app-preparation/system-dialog-controller.ts`
-
-已经集中识别以下精确错误组合：
-
-```text
-SecurityException
-INJECT_EVENTS
-Injecting input events requires the caller
-injectInputEvent / injectInputEventToTarget
-```
-
-命中后转换为：
-
-```text
-DEVICE_INPUT_AUTOMATION_DENIED
-```
-
-小米提示明确说明：保持手机解锁，并在开发者选项开启“USB 调试（安全设置）”；Network ADB 同样受该设置限制。
-
-安全边界：
-
-- 普通网络断开、ADB 超时、daemon 错误和无关 `SecurityException` 不得误分类；
-- 点击被拒绝时保存当前窗口、UI XML 和截图；
-- 不自动重试确定性的 `INJECT_EVENTS` 拒绝；
-- 不修改系统设置、不执行 `settings put`/`setprop`；
-- 不引入 Accessibility、Appium、UIAutomator2、OCR 或固定坐标；
-- 不从 Network Endpoint 偷偷回退到 USB。
-
-设备侧正确处理顺序：
-
-1. 手机亮屏并物理解锁；
-2. 开启“USB 调试”；
-3. 开启的是“USB 调试（安全设置）”，不要误认为“USB 安装”；
-4. 若已显示开启，先关闭再重新开启，并完成 HyperOS 的账号/倒计时确认；
-5. 撤销旧 USB 调试授权；
-6. USB 重连并勾选“始终允许此计算机”；
-7. 断开并重新建立 Network ADB；
-8. 先测 USB Endpoint，再测 Network Endpoint。
-
----
-
-## 2.4 最新完成：APK 自动化变慢与 Morpho 启动卡死修复
-
-这是当前最重要、最新的一轮改动。
-
-### A. 运行时 Logcat 改为业务 Tag 白名单
-
-主要文件：
-
-- `/Users/hanzhen/Documents/云测试的项目/apps/api/src/execution/adb-streams.ts`
-- `/Users/hanzhen/Documents/云测试的项目/apps/api/src/apk-protocols.ts`
-
-旧命令是持续全量 Verbose：
-
-```bash
-adb logcat -b all -v threadtime '*:V'
-```
-
-现在运行时使用原生 Tag filter 和 `*:S`，Morpho 只采集：
-
-```text
-MORPHO
-MorphoVideoPProc/Controller
-MorphoVideoPProc/Decoder
-MorphoVideoPProc/Encoder
-MorphoVideoPProc/Interface
-MorphoVideoPProc/Parser
-MorphoVideoPProc/Sensor
-MorphoVideoPProc/Stabilizer
-MorphoVideoPProc/WDR
-```
-
-平台载体只采集：
-
-```text
-SDK_COMPAT
-```
-
-命令形态：
-
-```bash
-adb logcat -T 1 -v threadtime <业务Tag>:V '*:S'
-```
-
-`-T 1` 用于避免任务开始前的旧 Morpho 日志被误认为本次任务的启动证据。
-
-Logcat 启动时机已经后移到：
-
-```text
-APK 安装、权限与弹窗处理完成
-→ 视频上传完成
-→ 启动前设备检查完成
-→ 才启动业务 Logcat
-```
-
-因此安装、弹窗、权限和视频上传阶段不再与全量日志流争抢 Network ADB。
-
-### B. Morpho 增加 15 秒启动握手
-
-新增文件：
-
-- `/Users/hanzhen/Documents/云测试的项目/apps/api/src/execution/morpho-startup.ts`
-- `/Users/hanzhen/Documents/云测试的项目/apps/api/src/execution/morpho-startup.test.ts`
-
-`am start` 返回成功不再等于业务启动成功。现在必须得到以下任一证据：
-
-```text
-MORPHO_LOG
-```
-
-业务日志证据包含以下任意真实日志：
-
-```text
-Starting batch processing for path:
-Found <n> mp4
-Found mp4 file:
-Processing file
-Input:
-Output:
-```
-
-或者：
-
-```text
-BATCH_SERVICE
-```
-
-Service 严格匹配：
-
-```text
-com.morphoinc.videopostprocessor/.BatchProcessService
-```
-
-或完整 component：
-
-```text
-com.morphoinc.videopostprocessor/com.morphoinc.videopostprocessor.BatchProcessService
-```
-
-时间规则：
-
-- 0～3 秒：快速等待业务日志；
-- 第 3 秒：开始检查进程、Service、屏幕和 Keyguard；
-- 3～15 秒：每秒检查一次双证据和设备状态；
-- 第 15 秒：结束启动阶段，不进入 900 秒无效等待。
-
-失败分类：
-
-| 状态 | 错误码 |
-|---|---|
-| Morpho 进程退出 | `APP_CRASHED` |
-| 设备重新休眠或进入锁屏，Service 未启动 | `DEVICE_LOCKED` |
-| Logcat 异常退出且无 Service 证据 | `LOGCAT_START_FAILED` |
-| 进程存活、设备正常，但没有业务日志和 Service | `SDK_START_FAILED` |
-
-业务 Intent 只发送一次，等待期间不会重复发送 `ACTION_BATCH_PROCESS`。
-
-### C. 启动状态探测合并为一次 ADB shell
-
-`/Users/hanzhen/Documents/云测试的项目/apps/api/src/execution/morpho-startup.ts` 中通过一次 shell 调用收集：
-
-```text
-dumpsys activity services
-pidof
-dumpsys power
-dumpsys window policy
-```
-
-目的：避免每秒发送四条独立 ADB 命令，减少 Network ADB 往返压力。
-
-状态探测还受启动阶段剩余时间限制，避免出现“15 秒业务超时 + 多个 10 秒 dumpsys 超时”导致实际耗时远超 15 秒。
-
-### D. 启动前设备检查改为只读优先
-
-主要文件：
-
-- `/Users/hanzhen/Documents/云测试的项目/apps/api/src/execution/android-app-preparation/device-readiness.ts`
-
-视频上传后先执行只读检查：
-
-```bash
-dumpsys power
-dumpsys window policy
-```
-
-行为：
-
-- 已亮屏、可交互、无 Keyguard：不发送唤醒命令；
-- 休眠：按需发送一次 `KEYCODE_WAKEUP`；
-- 非安全 Keyguard：尝试 `wm dismiss-keyguard`；
-- PIN、图案或密码锁：返回 `DEVICE_LOCKED`；
-- 重新检查后仍不可交互，才使用 `KEYCODE_MENU` 作为兼容兜底；
-- 小米拒绝输入：保持 `DEVICE_INPUT_AUTOMATION_DENIED`；
-- 其他厂商仍保留 PowerManager 唤醒 fallback。
-
-没有增加测试点击，没有绕过安全锁，也没有修改手机设置。
-
-### E. 成功日志与失败诊断分离
-
-成功任务只保存过滤后的：
-
-```text
-logcat.txt
-```
-
-业务日志上限：
-
-```ts
-Math.min(config.maxLogcatBytes, 16 * 1024 * 1024)
-```
-
-全局 `MAX_LOGCAT_BYTES` 默认值仍是 256 MiB，没有修改全局环境变量语义。
-
-非取消失败任务额外执行一次：
-
-```bash
-adb logcat -d -b all -v threadtime
-```
-
-保存到：
-
-```text
-diagnostics/logcat-full-failure.txt
-```
-
-失败快照最多 16 MiB，只读取一次，不启动第二条持续流，不清空设备缓冲区；采集失败只记告警，不能覆盖原任务错误。取消任务不采集。
-
-注意：代码中仍出现的 `-b all` 是**一次性失败快照**，不是运行时全量 Verbose 回归。不要仅凭搜索到 `-b all` 就删除它。
-
-### F. 增加阶段耗时日志
-
-主要文件：
-
-- `/Users/hanzhen/Documents/云测试的项目/apps/api/src/adb.ts`
-- `/Users/hanzhen/Documents/云测试的项目/apps/api/src/execution/android-app-preparation/android-app-preparer.ts`
-- `/Users/hanzhen/Documents/云测试的项目/apps/api/src/execution/android-app-preparation/contracts.ts`
-
-现在任务日志记录：
-
-```text
-APK 安装耗时
-权限与启动前兼容处理耗时
-应用准备总耗时
-视频上传与远端校验耗时
-Morpho 启动握手耗时
-SDK 处理耗时
-输出验证与回收耗时
-```
-
-启动握手还记录：
-
-```text
-证据=MORPHO_LOG
-```
-
-或：
-
-```text
-证据=BATCH_SERVICE
-```
-
-没有修改数据库结构，仍写入现有任务日志。
-
----
-
-## 3. 明确没有修改或不应修改的范围
-
-最新“自动化变慢/Morpho 卡死”修复没有修改：
-
-```text
-/Users/hanzhen/Documents/云测试的项目/apps/api/src/execution/android-app-preparation/apk-install-coordinator.ts
-```
-
-也没有为了性能问题修改小米、荣耀、vivo、OPPO 的弹窗匹配条件。
-
-当前 Git 状态中 `dialog-profiles.ts` 显示已有修改，是此前小米/荣耀适配工作，不是最新性能修复新增的改动。不要因为文件同时出现在 diff 中就把所有变化归因于本轮。
-
-不要修改以下范围，除非新的真机证据明确证明必须修改：
-
-- HTTP API 契约；
-- 数据库结构、Migration 和历史数据；
-- 前端框架；
-- 任务队列和同一物理设备的串行语义；
-- Endpoint 选择、冻结和连接模式；
-- USB/Network 之间的显式选择；
-- Android APK 工程；
-- 依赖、pnpm 版本、React、Fastify 或构建框架。
-
----
-
-## 4. 历史验证快照（2026-08-05；不代表当前正式基线的完整门禁）
-
-最近一次代码级验证结果（2026-08-05）：
-
-### 定向测试
-
-```text
-7 个测试文件通过
-59 个测试通过
-```
-
-覆盖：
-
-- Logcat Tag 白名单；
-- 业务日志 16 MiB 独立上限；
-- 一次性失败快照；
-- 3 秒诊断和 15 秒硬上限；
-- 5 秒、12 秒出现业务日志；
-- BatchProcessService 独立证据；
-- 进程退出、锁屏、Logcat 失败分类；
-- 单次启动状态 Probe；
-- 小米输入权限错误；
-- APK 安装协调器和系统弹窗控制器回归。
-
-### 全量测试
-
-```text
-40 个测试文件通过
-214 个测试通过
-```
-
-### Web/API 构建
-
-```text
-build:web 通过
-build:api 通过
-```
-
-Vite 只有原有大 Chunk 警告，不是构建失败，也不是本轮 Android 后端改动造成的功能错误。
-
-### Android 构建
-
-```text
-BUILD SUCCESSFUL
-32 actionable tasks: 32 up-to-date
-```
-
-### Diff 检查
-
-```text
-git diff --check
-```
-
-通过。
-
-注意：以上结果是在写本交接文档前完成的。写入 `HANDOFF.md` 后只改变了 Markdown，不需要因此重复 Android 真机构建；若继续修改代码，应重新运行相关测试。
-
----
-
-## 5. 历史现场阻塞（保留用于追溯）
-
-代码实现和自动化测试已经完成，目前没有已知 TypeScript/构建阻塞。真正的阻塞是**缺少最新真机无人值守回归结果**。
-
-需要确认：
-
-1. Mate X5 自然休眠后，上传完成时能否按需唤醒；
-2. Morpho 是否能在 15 秒内取得 `MORPHO_LOG` 或 `BATCH_SERVICE`；
-3. 小米 15 Pro 的第一层弹窗仍严格点击 `android:id/button2`；
-4. 小米未开启“USB 调试（安全设置）”时是否准确返回 `DEVICE_INPUT_AUTOMATION_DENIED`；
-5. 荣耀 X50 的已有 Profile 是否仍能识别真机页面；
-6. 两台 Network ADB 并行时，总体耗时是否明显改善，且不隐式回退 USB。
-
-Mate X5 曾出现“卡在 SDK 流程”，但随后单独重测又可以自动化，因此它不是稳定复现的单一厂商 Profile 问题。当前更可能是共享执行链路压力、设备休眠状态或把 `am start` 误判为业务启动。不要基于一次偶发现象给 Mate X5 写品牌特判。
-
----
-
-## 6. 历史下一步计划（部分已由后续稳定化链完成）
-
-## 6.1 Mate X5 真机验收
-
-建议流程：
-
-1. 只选择 Mate X5；
-2. 安装期间允许设备自然休眠；
-3. 全程不人工触摸；
-4. 检查任务日志中的阶段耗时；
-5. 检查启动握手证据是 `MORPHO_LOG` 还是 `BATCH_SERVICE`；
-6. 若失败，确认是否在约 15 秒内返回 `APP_CRASHED`、`DEVICE_LOCKED`、`LOGCAT_START_FAILED` 或 `SDK_START_FAILED`；
-7. 确认没有进入 900 秒无效等待。
-
-重点保存：任务 ID、DeviceRun ID、Endpoint、每阶段耗时、失败 diagnostics。
-
-## 6.2 小米 15 Pro 真机验收
-
-分两组：
-
-### 安全设置开启
-
-- 手机亮屏并解锁；
-- 开启“USB 调试（安全设置）”；
-- 先用 USB Endpoint；
-- 全程不人工点击；
-- 日志必须记录小米 Profile 的 `continue-install`；
-- 不得点击“拒绝后下次安装不再提示”；
-- Morpho 安装、启动和处理完成。
-
-### 安全设置关闭
-
-- 任务应快速返回 `DEVICE_INPUT_AUTOMATION_DENIED`；
-- 不得反复点击；
-- 提示必须指向“USB 调试（安全设置）”；
-- 点击阶段失败时应保存 TXT、XML、PNG 诊断。
-
-然后重新建立 Network ADB，再显式测试 Network Endpoint；不允许自动回退 USB。
-
-## 6.3 荣耀 X50 回归
-
-- 验证已有 Honor Profile 和 `honor-x50-safe-mode-install-sheet.xml` 对应流程；
-- 如果仍不能识别，先采集该次真实窗口、component、XML 和截图；
-- 对比 Fixture 是否已因 MagicOS 页面升级失效；
-- 不要用通用文字放宽已有 Profile。
-
-## 6.4 Network ADB 并行验证
-
-- 同时运行两台设备；
-- 对比修复前后的安装、上传、启动和处理耗时；
-- 确认运行时命令不再包含 `-b all '*:V'`；
-- 确认成功任务日志只有业务 Tag；
-- 失败任务才生成一次 `diagnostics/logcat-full-failure.txt`；
-- 确认设备 Endpoint 记录与用户显式选择一致。
-
-## 6.5 真机有问题时的诊断顺序
-
-按此顺序，不要直接改代码：
-
-1. 确认任务使用的物理设备和 Endpoint；
-2. 确认电脑与 Network Endpoint 是否同一局域网；
-3. 看阶段耗时，判断卡在安装、权限、上传、启动握手、SDK 处理还是输出回收；
-4. 看启动证据和准确错误码；
-5. 查看 `diagnostics/logcat-full-failure.txt`；
-6. 涉及弹窗时采集 current window、UI XML、截图和 `pm path`；
-7. 用真实证据补失败测试；
-8. 最后才做最小代码修改。
-
----
-
-## 7. 推荐验证命令
-
-如果没有再修改代码，可先运行定向测试：
-
-```bash
-pnpm test -- \
-  apps/api/src/execution/adb-streams.test.ts \
-  apps/api/src/execution/morpho-startup.test.ts \
-  apps/api/src/apk-protocols.test.ts \
-  apps/api/src/execution/android-app-preparation/guards-and-permissions.test.ts \
-  apps/api/src/execution/android-app-preparation/apk-install-coordinator.test.ts \
-  apps/api/src/execution/android-app-preparation/system-dialog-controller.test.ts
-```
-
-完整验证：
-
-```bash
-git diff --check
-pnpm test
-pnpm build
-./android/gradlew -p android assembleDebug
-```
-
-不要为了让测试变绿而删除真机 Fixture、降低严格匹配条件或跳过错误分类测试。
-
----
-
-## 8. 踩过的坑：绝对不要再踩
-
-### 8.1 不要把“读取设备列表”再次耦合到真实 ADB 扫描
-
-`listRegisteredSnapshot()` 必须保持只读；真实刷新只能走 `refreshRegistered()`。否则健康接口和页面轮询会再次被异常 Endpoint 拖慢。
-
-### 8.2 不要恢复首页每 5 秒真实扫描设备
-
-健康轮询可以每 5 秒执行，但设备全量 ADB 扫描不能跟着健康轮询运行。设备页默认读快照，真实状态由手动刷新或任务开始前验证。
-
-### 8.3 不要把 Wi-Fi/局域网不可达误认为后端代码故障
-
-先确认电脑、浏览器、API 和 Network Endpoint 的 IP/路由。不同 Wi-Fi 导致的网络连接失败应显示“正在重试/服务未连接”，不能用延长后端超时掩盖。
-
-### 8.4 不要把 `am start` 成功当作 Morpho SDK 已启动
-
-必须以 `MORPHO_LOG` 或 `BATCH_SERVICE` 为证据。进程存活、MainActivity 显示或命令退出码 0 都不够。
-
-### 8.5 不要恢复运行时全量 Verbose Logcat
-
-禁止重新长期执行：
-
-```bash
-adb logcat -b all -v threadtime '*:V'
-```
-
-它会占用 Network ADB，拖慢安装、上传和启动。`-b all` 只保留给失败时的一次性快照。
-
-### 8.6 不要把启动等待改回 45 秒或直接进入 900 秒等待
-
-当前硬上限是 15 秒，并有 3 秒快速诊断。若真机稳定超过 15 秒，先收集多台设备的数据，再统一调整；不要按品牌写死 30/45 秒，更不要无证据地放大超时。
-
-### 8.7 不要每秒发四条独立 ADB 状态命令
-
-Morpho 启动状态已经合并为一次 shell Probe。拆开会增加 Network ADB 往返和超时叠加。
-
-### 8.8 不要重复发送 `ACTION_BATCH_PROCESS`
-
-启动握手等待期间只能检查证据，不能为了“重试”重复发 Intent，否则可能重复处理、覆盖输出或制造并发服务状态。
-
-### 8.9 不要用通用文案或固定坐标处理厂商弹窗
-
-禁止仅凭“安装”“继续”“允许”“下载”匹配，禁止固定屏幕坐标、OCR、截图模板盲点。必须验证厂商、APK 身份、系统包、component、关键文案、resource-id 和节点 bounds。
-
-### 8.10 不要自动勾选小米的“拒绝后下次安装不再提示”
-
-它不是风险确认，当前 Profile 明确 `allowUncheckedConfirmation: false`。
-
-### 8.11 不要用代码绕过 HyperOS 安全设置
-
-`INJECT_EVENTS` 是系统权限拒绝，不是瞬时网络错误。不要无限重试，不要自动改设置，不要引入 Accessibility，也不要把人工点击记作平台自动处理成功。
-
-### 8.12 不要因 Network Endpoint 失败偷偷切 USB
-
-任务必须使用已经选择并冻结的 Endpoint。Network 失败就返回真实错误；隐式切换会让执行记录失真，也破坏连接模式语义。
-
-### 8.13 不要把所有 `SecurityException` 都归为输入权限错误
-
-只有同时命中输入注入特征才返回 `DEVICE_INPUT_AUTOMATION_DENIED`。ADB 断线、超时和其他权限问题必须保留原始错误。
-
-### 8.14 不要修改全局 `MAX_LOGCAT_BYTES` 默认值
-
-全局仍是 256 MiB。本次只在业务日志和失败快照调用点使用最多 16 MiB 的局部限制，不能影响普通 ADB 命令、push、pull、截图和 UI XML。
-
-### 8.15 历史混合工作树处理规则
-
-以下规则针对旧目录 `/Users/hanzhen/Documents/云测试的项目` 的历史现场。当前正式开发目录已经 clean，不应把旧目录的 staged/unstaged/untracked 内容整体带回 `main`。如需迁移其中需求，必须按文件、按 hunk、按业务切片审查，尤其不要顺手修改与目标任务无关的文档、依赖或框架配置。
-
----
-
-## 9. 新会话应重点阅读的文件
-
-按优先级：
-
-1. `/Users/hanzhen/Documents/云测试的项目/apps/api/src/adb.ts`
-2. `/Users/hanzhen/Documents/云测试的项目/apps/api/src/execution/morpho-startup.ts`
-3. `/Users/hanzhen/Documents/云测试的项目/apps/api/src/execution/morpho-startup.test.ts`
-4. `/Users/hanzhen/Documents/云测试的项目/apps/api/src/execution/adb-streams.ts`
-5. `/Users/hanzhen/Documents/云测试的项目/apps/api/src/apk-protocols.ts`
-6. `/Users/hanzhen/Documents/云测试的项目/apps/api/src/execution/android-app-preparation/device-readiness.ts`
-7. `/Users/hanzhen/Documents/云测试的项目/apps/api/src/execution/android-app-preparation/system-dialog-controller.ts`
-8. `/Users/hanzhen/Documents/云测试的项目/apps/api/src/execution/android-app-preparation/dialog-profiles.ts`
-9. `/Users/hanzhen/Documents/云测试的项目/apps/api/src/execution/android-app-preparation/input-automation-compatibility.ts`
-10. `/Users/hanzhen/Documents/云测试的项目/apps/api/src/devices/device-registry.ts`
-11. `/Users/hanzhen/Documents/云测试的项目/web/src/layouts/serviceHealth.ts`
-
----
-
-## 10. 一句话交接结论
-
-**健康检查/设备扫描解耦、小米 HyperOS 严格弹窗识别与输入权限分类、Morpho 业务 Logcat 白名单及 15 秒双证据启动握手均已在当前工作区实现并通过代码级测试；现在不要继续猜测式改代码，应先完成 Mate X5、小米 15 Pro、荣耀 X50 和 Network ADB 的无人值守真机回归，并用阶段耗时与 diagnostics 决定是否需要下一次最小修复。**
+项目已经从旧混合工作树中建立了干净正式 main，并把 9 台设备、38 个任务及全部历史文件一致迁移到独立 `cloud-test-data`；当前最重要的下一步不是继续加模块，而是在正式仓库和独立数据目录下完成一次 PKR110 真实任务写入 smoke，然后修复孤儿报告误报并继续按 Evidence → fixture → 跨 Seam 回归 → 真机验证的方式扩展机型。
