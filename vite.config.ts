@@ -6,9 +6,9 @@ export default defineConfig({
   root: '.',
   publicDir: 'web/public',
   server: {
-    port: 5173,
+    port: 5174,
     proxy: {
-      '/api': 'http://127.0.0.1:3000',
+      '/api': 'http://127.0.0.1:3001',
     },
   },
   build: { outDir: 'dist', emptyOutDir: true },
