@@ -50,14 +50,18 @@ git rev-parse HEAD
 git remote -v
 ```
 
-截至本交接文档生成时，正式仓库状态为：
+截至 2026-08-10 17:32（Asia/Shanghai）本次接手检查时，正式仓库状态为：
 
 ```text
 branch: main
-HEAD: c538f36f25557ecef90ef453bb0ea86974befd90
-status: clean，且本地显示 main 与 origin/main 对齐
+HEAD: 9ccfe7a223f0e6d290213d03bed9ef625a2ad98f
+origin/main: c538f36f25557ecef90ef453bb0ea86974befd90
+tracking: main ahead 1
+working tree: 仅 HANDOFF.md 有待提交的文档修改；未发现源代码修改
 origin: git@github.com:18889627163-max/cloud-test-platform.git
 ```
+
+`9ccfe7a` 是“docs: add project handoff”提交；当前未提交修改包含本节交接状态刷新和第 2.1 节机型/协议改动强制回答清单。交接前不得把这些文档修改误认为已同步到 `origin/main`。
 
 注意：本地引用显示 `origin/main` 已对齐，但此前曾发生过 GitHub SSH `Permission denied (publickey)`。下次真正 fetch/push 前仍应运行 `ssh -T git@github.com` 或 `git fetch origin` 重新确认当前 SSH 凭据，不要仅凭本地 remote-tracking ref 推断网络认证一定正常。
 
@@ -110,6 +114,38 @@ S0 冻结版本和运行证据
 - 用户说“你没理解我”时，先重述用户意图，不要急着辩解；
 - 如果用户是在探索，不要过早给出唯一结论；
 - 涉及运行结果时，区分“自动化/fixture 通过”“历史真机通过”“当前真机重新验收通过”。
+
+### 2.1 机型或协议改动的强制回答清单
+
+以后每一个机型或协议改动，无论是设计说明、实现汇报、代码评审还是交付结论，都必须逐项回答以下问题：
+
+1. **业务行为改变了什么？** 明确改动前后用户可观察行为、适用机型/系统/协议阶段，以及未改变的行为。
+2. **哪个深 Module 是最终决策所有者？** 只能指定一个最终拥有业务判断权的深模块；其他模块只能提供事实、执行动作或适配，不得重复决策。
+3. **Interface 是否变化？** 列出新增、删除或语义变化的输入、输出、事件、错误和兼容策略；未变化也必须明确写“未变化”。
+4. **状态唯一 writer 是谁？** 指明每个受影响状态的唯一写入者，以及其他模块如何只读、订阅或请求变更。
+5. **时序和取消是否变化？** 说明 phase/transition、等待条件、timeout、重试、并发、主动取消和清理语义是否改变。
+6. **Failure 和 Evidence 是否对齐？** 每个新增或变化的失败语义必须有对应的结构化 Failure、优先级、Evidence、Attempt 身份和可诊断上下文。
+7. **fixture 是否补充？** 正常、失败、边界和回归场景分别新增或更新了哪些 fixture；未补充时必须说明为什么现有 fixture 足够。
+8. **跨 Seam 测试是否通过？** 明确列出跨越了哪些模块边界、执行了哪些测试、结果如何；单模块测试不能替代跨 Seam 验证。
+9. **真机 Gate 是否完成？** 分开报告“fixture/自动化通过”“历史真机通过”“本次当前版本真机通过”；没有本次真机 Evidence 时只能写“真机 Gate 未完成”。
+10. **能否独立回退？** 说明回退范围、数据/接口兼容性、依赖提交、回退步骤和回退后的验证方式。
+
+固定汇报模板：
+
+```text
+业务行为：
+最终决策所有者（深 Module）：
+Interface：
+状态唯一 writer：
+时序与取消：
+Failure / Evidence：
+fixture：
+跨 Seam 测试：
+真机 Gate：
+独立回退：
+```
+
+任何一项不得省略。尚未完成的项目必须明确标记“未完成”、缺少的 Evidence 和下一步 Gate；确实不适用时必须写“不适用”并说明理由，不得用笼统的“已验证”“应该没问题”代替。
 
 ---
 
@@ -295,15 +331,11 @@ runtimeConfiguration.gitWorktreeClean: true
 
 ---
 
-## 5. API 验证已完成
+## 5. API 历史验证已完成；当前 API 未启动
 
-截至 2026-08-10 交接时，3000 端口有 Node API 监听。最后观察到的 PID 为：
+历史迁移验收期间，3000 端口曾有 Node API 监听，且 API Gate 全部通过；该结果由 `migration-manifest.json` 保存。
 
-```text
-12061
-```
-
-PID 会变化，不要把它当作永久配置。新会话应重新运行：
+本次 2026-08-10 17:32 接手检查时，3000 端口没有监听进程，`curl http://127.0.0.1:3000/api/health` 无法连接。启动或验证 API 前，先运行：
 
 ```bash
 lsof -nP -iTCP:3000 -sTCP:LISTEN
@@ -690,15 +722,18 @@ python3 -m json.tool \
   >/tmp/cloud-test-migration-manifest.pretty.json
 ```
 
-期望基线：
+本次接手时的期望基线：
 
 ```text
-main clean
-HEAD = c538f36f25557ecef90ef453bb0ea86974befd90
+branch = main
+HEAD = 9ccfe7a223f0e6d290213d03bed9ef625a2ad98f
+origin/main = c538f36f25557ecef90ef453bb0ea86974befd90
+working tree = 仅允许 HANDOFF.md 文档修改；开始编码前应先处理或明确保留它
 CLOUD_TEST_DATA_DIR=/Users/hanzhen/Documents/cloud-test-data
 migration status = validated
 registered devices = 9
 historical tasks = 38
+API = 当前未启动；启动后必须重新执行 health/API Gate
 ```
 
 如果任何值不同：
@@ -715,15 +750,18 @@ historical tasks = 38
 | 项目 | 状态 | 说明 |
 |---|---|---|
 | 正式代码仓库隔离 | 已完成 | `/Users/hanzhen/Documents/cloud-test-platform` |
-| 正式 main clean | 已确认 | HEAD `c538f36...` |
+| 正式 main 代码基线 | 已完成 | `HEAD 9ccfe7a...`；稳定化代码基线为 `c538f36...` |
+| 本地与 origin/main 同步 | 未完成 | 本地 `main` ahead 1；交接文档待提交/推送 |
+| 当前 working tree | 需处理 | 仅 `HANDOFF.md` 有文档修改；开始编码前应先提交、暂存或明确保留 |
 | GitHub remote 配置 | 已完成 | SSH 当前连通性下次推送前复核 |
 | 稳定化提交链 | 已完成 | Attempt、状态机、Morpho、Failure、Evidence 等已进入 main |
 | 旧混合工作树归档 | 已完成但仍保留 | 不得作为正式开发目录 |
 | 历史 SQLite 一致性迁移 | 已完成 | quick_check 和外键检查通过 |
 | Artifact/Output 路径重写 | 已完成 | 107 / 68，旧前缀均为 0 |
 | 文件大小与 SHA-256 校验 | 已完成 | 全部通过 |
-| 历史设备和任务 API 读取 | 已完成 | 9 台设备、38 个任务 |
-| API 使用独立数据目录 | 已确认 | 未访问旧库/新仓库空库 |
+| 历史设备和任务 API 读取 | 已完成 | 9 台设备、38 个任务；结果见迁移 manifest |
+| 当前 API 运行状态 | 未启动 | 本次检查未监听 3000；启动后需重新执行 health/API Gate |
+| API 使用独立数据目录 | 已确认 | 历史验证未访问旧库/新仓库空库；当前启动前仍需检查 `.env.local` |
 | 迁移后真实任务写入 smoke | 未完成 | 下一步最高优先级 |
 | `report:orphans` 修复 | 未完成 | 当前有已知误报，禁止作为删除依据 |
 | PKR110 完整重复真机 Gate | 需复核/继续 | 不要仅凭提交名宣称全部次数已完成 |
