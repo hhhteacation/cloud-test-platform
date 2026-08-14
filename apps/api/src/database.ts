@@ -14,7 +14,7 @@ import { TaskStore } from './database/stores/task-store.js'
 import { VideoExecutionStore } from './database/stores/video-execution-store.js'
 import type { ArtifactRecord, CheckResult, MediaIntegrityResult } from './types.js'
 
-export type { DeviceRunExecution, DeviceRunJob } from './database/contracts.js'
+export type { DeviceRunExecution, DeviceRunJob, VideoRunExecution } from './database/contracts.js'
 
 export interface PlatformDatabaseOptions {
   databasePath?: string
@@ -61,6 +61,9 @@ export class PlatformDatabase {
     this.networkConnectionOperations = new NetworkConnectionOperationStore(this.db)
     this.networkConnectionOperations.markInterrupted()
     this.deviceRuns.setTaskStateChangedHandler((taskId) => this.tasks.recompute(taskId))
+    this.videoExecutions.setResultStateChangedHandler((taskId, runId) => {
+      this.deviceRuns.recomputeFromVideoResults(taskId, runId)
+    })
 
     const seedSerial = Object.hasOwn(options, 'deviceSerial') ? options.deviceSerial : config.deviceSerial
     if (options.seedDevice !== false && seedSerial) seedDefaultDevices(this.db, seedSerial)
@@ -129,6 +132,21 @@ export class PlatformDatabase {
 
   createVideoAttempt(videoRunResultId: string, input?: Parameters<VideoExecutionStore['createAttempt']>[1]) {
     return this.videoExecutions.createAttempt(videoRunResultId, input)
+  }
+  listVideoExecutionsForDeviceRun(taskId: string, runId: string) {
+    return this.videoExecutions.listExecutionsForDeviceRun(taskId, runId)
+  }
+  setVideoExecutionState(input: Parameters<VideoExecutionStore['setState']>[0]) {
+    return this.videoExecutions.setState(input)
+  }
+  finishVideoAttempt(attemptId: string, input: Parameters<VideoExecutionStore['finishAttempt']>[1]) {
+    return this.videoExecutions.finishAttempt(attemptId, input)
+  }
+  recordVideoMediaIntegrity(videoRunResultId: string, result: MediaIntegrityResult) {
+    return this.videoExecutions.recordMediaIntegrity(videoRunResultId, result)
+  }
+  blockRemainingVideoResults(input: Parameters<VideoExecutionStore['blockRemaining']>[0]) {
+    return this.videoExecutions.blockRemaining(input)
   }
 
   addOutput(input: Parameters<ArtifactStore['addOutput']>[0]) { return this.artifacts.addOutput(input) }

@@ -59,18 +59,39 @@ export class DeviceRunStore {
     const row = this.db.prepare(`
       SELECT t.status AS task_status, t.timeout_seconds, t.platform,
              a.storage_path AS apk_path, a.package_name AS apk_package_name,
-             v.storage_path AS video_path, v.original_name AS video_original_name,
              r.id AS run_id, r.device_id, r.status AS run_status,
              r.endpoint_id, r.connection_kind, COALESCE(r.adb_serial, d.serial) AS device_serial,
              d.name AS device_name
       FROM device_runs r
       JOIN tasks t ON t.id = r.task_id
       JOIN artifacts a ON a.id = t.apk_artifact_id
-      JOIN artifacts v ON v.id = t.video_artifact_id
       JOIN devices d ON d.id = r.device_id
       WHERE t.id = ? AND r.id = ?
     `).get(taskId, runId) as Row | undefined
     if (!row) return undefined
+
+    const videos = (this.db.prepare(`
+      SELECT vrr.id AS video_run_result_id, tv.id AS task_video_id,
+             tv.artifact_id, tv.sequence, tv.display_name,
+             video.storage_path AS video_path, video.original_name AS video_original_name,
+             vrr.status AS video_run_status
+      FROM video_run_results vrr
+      JOIN task_videos tv ON tv.id = vrr.task_video_id
+      JOIN artifacts video ON video.id = tv.artifact_id
+      WHERE vrr.task_id = ? AND vrr.device_run_id = ?
+      ORDER BY tv.sequence
+    `).all(taskId, runId) as Row[]).map((video) => ({
+      videoRunResultId: asString(video.video_run_result_id),
+      taskVideoId: asString(video.task_video_id),
+      artifactId: asString(video.artifact_id),
+      sequence: asNumber(video.sequence),
+      displayName: asString(video.display_name) || asString(video.video_original_name) || 'input.mp4',
+      videoPath: asString(video.video_path),
+      videoOriginalName: asString(video.video_original_name) || 'input.mp4',
+      runStatus: asString(video.video_run_status) as RunStatus,
+    }))
+    if (!videos.length) return undefined
+
     return {
       taskId, runId: asString(row.run_id), deviceId: asString(row.device_id),
       deviceSerial: asString(row.device_serial), deviceName: asString(row.device_name),
@@ -78,7 +99,9 @@ export class DeviceRunStore {
       connectionKind: (asString(row.connection_kind) || undefined) as DeviceRunExecution['connectionKind'],
       platform: (asString(row.platform) || 'android') as DevicePlatform,
       apkPath: asString(row.apk_path), apkPackageName: asString(row.apk_package_name) || undefined,
-      videoPath: asString(row.video_path), videoOriginalName: asString(row.video_original_name) || 'input.mp4',
+      videos,
+      videoPath: videos[0].videoPath,
+      videoOriginalName: videos[0].videoOriginalName,
       timeoutSeconds: asNumber(row.timeout_seconds),
       taskStatus: asString(row.task_status) as TaskStatus,
       runStatus: asString(row.run_status) as RunStatus,
@@ -100,7 +123,7 @@ export class DeviceRunStore {
     const result = this.db.prepare(`
       UPDATE device_runs
       SET endpoint_id = ?, connection_kind = ?, adb_serial = ?
-      WHERE id = ? AND task_id = ? AND device_id = ? AND status = 'queued'
+      WHERE id = ? AND task_id = ? AND device_id = ? AND status IN ('queued', 'running')
         AND EXISTS (
           SELECT 1 FROM tasks
           WHERE id = ? AND status IN ('queued', 'running')
@@ -194,6 +217,77 @@ export class DeviceRunStore {
       this.onTaskStateChanged(job.taskId)
     }
     return result.changes === 1
+  }
+
+  recomputeFromVideoResults(taskId: string, runId: string) {
+    const task = this.db.prepare('SELECT status FROM tasks WHERE id = ?').get(taskId) as Row | undefined
+    if (!task || asString(task.status) === 'cancelled') return
+    const rows = this.db.prepare(`
+      SELECT video_run_results.*, task_videos.sequence
+      FROM video_run_results
+      JOIN task_videos ON task_videos.id = video_run_results.task_video_id
+      WHERE video_run_results.task_id = ? AND video_run_results.device_run_id = ?
+      ORDER BY task_videos.sequence
+    `).all(taskId, runId) as Row[]
+    if (!rows.length) return
+
+    const statuses = rows.map((row) => asString(row.status) as RunStatus)
+    const allQueued = statuses.every((status) => status === 'queued')
+    const unfinished = statuses.some((status) => status === 'queued' || status === 'running')
+    const runStatus: RunStatus = allQueued
+      ? 'queued'
+      : unfinished
+        ? 'running'
+        : statuses.every((status) => status === 'passed')
+          ? 'passed'
+          : 'failed'
+    const progress = Math.round(rows.reduce((total, row) => total + asNumber(row.progress), 0) / rows.length)
+    const active = rows.find((row) => asString(row.status) === 'running')
+      ?? [...rows].reverse().find((row) => asString(row.status) !== 'queued')
+      ?? rows[0]
+    const failure = rows.find((row) => asString(row.status) === 'failed')
+      ?? rows.find((row) => asString(row.status) === 'blocked')
+    const executionStatuses = rows.map((row) => asString(row.execution_status) || 'pending')
+    const executionStatus: ExecutionStatus = unfinished
+      ? executionStatuses.includes('running') ? 'running' : 'pending'
+      : executionStatuses.every((status) => status === 'passed') ? 'passed' : 'failed'
+    const integrityStatuses = rows.map((row) => asString(row.media_integrity_status) || 'not_checked')
+    const mediaIntegrityStatus = integrityStatuses.includes('failed')
+      ? 'failed'
+      : integrityStatuses.every((status) => status === 'passed') ? 'passed' : 'not_checked'
+    const startedAt = asString(rows.find((row) => asString(row.started_at))?.started_at) || null
+    const finishedAt = unfinished
+      ? null
+      : asString([...rows].reverse().find((row) => asString(row.finished_at))?.finished_at) || now()
+
+    this.db.prepare(`
+      UPDATE device_runs
+      SET status = ?, phase = ?, progress = ?,
+          failure_code = ?, failure_message = ?, execution_status = ?,
+          execution_failure_code = ?, execution_failure_json = ?,
+          started_at = ?, finished_at = ?, media_integrity_status = ?,
+          media_integrity_failure_code = ?, media_metadata = ?
+      WHERE id = ? AND task_id = ?
+    `).run(
+      runStatus,
+      asString(active.phase) || 'validating_device',
+      progress,
+      failure ? asString(failure.failure_code) || null : null,
+      failure ? asString(failure.failure_message) || null : null,
+      executionStatus,
+      failure ? asString(failure.execution_failure_code) || null : null,
+      failure ? asString(failure.execution_failure_json) || null : null,
+      startedAt ?? null,
+      finishedAt,
+      mediaIntegrityStatus,
+      integrityStatuses.includes('failed')
+        ? asString(rows.find((row) => asString(row.media_integrity_status) === 'failed')?.media_integrity_failure_code) || null
+        : null,
+      integrityStatuses.length === 1 ? asString(rows[0].media_metadata) || null : null,
+      runId,
+      taskId,
+    )
+    this.onTaskStateChanged(taskId)
   }
 
   recordMediaIntegrity(runId: string, result: MediaIntegrityResult) {

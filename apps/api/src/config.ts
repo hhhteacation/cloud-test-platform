@@ -24,6 +24,8 @@ export interface AppConfig {
   maxTaskInputVideoBytes: number
   minFreeDiskBytes: number
   maxConcurrentUploads: number
+  taskOutputExpansionFactor?: number
+  taskVideoRunOverheadBytes?: number
   maxProcessOutputBytes: number
   maxLogcatBytes: number
   processKillGraceMs: number
@@ -49,6 +51,16 @@ function positiveInteger(env: NodeJS.ProcessEnv, name: string, fallback: number)
   return value
 }
 
+function positiveNumber(env: NodeJS.ProcessEnv, name: string, fallback: number) {
+  const raw = env[name]
+  if (raw === undefined || raw.trim() === '') return fallback
+  const value = Number(raw)
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new ConfigError(`${name} 必须是大于 0 的数字，当前值：${raw}`)
+  }
+  return value
+}
+
 function loopbackHost(env: NodeJS.ProcessEnv): AppConfig['host'] {
   const value = env.API_HOST?.trim() || '127.0.0.1'
   if (value !== '127.0.0.1' && value !== '::1' && value !== 'localhost') {
@@ -70,6 +82,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const androidSdk = env.ANDROID_SDK_ROOT ?? path.join(env.HOME ?? '', 'Library/Android/sdk')
   const dataDir = absoluteDataDir(env)
   const deviceSerial = env.ADB_SERIAL?.trim() || undefined
+  const maxLogcatBytes = positiveInteger(env, 'MAX_LOGCAT_BYTES', 256 * 1024 * 1024)
 
   return {
     host: loopbackHost(env),
@@ -92,8 +105,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     maxTaskInputVideoBytes: positiveInteger(env, 'MAX_TASK_INPUT_VIDEO_BYTES', 10 * 1024 * 1024 * 1024),
     minFreeDiskBytes: positiveInteger(env, 'MIN_FREE_DISK_BYTES', 10 * 1024 * 1024 * 1024),
     maxConcurrentUploads: positiveInteger(env, 'MAX_CONCURRENT_UPLOADS', 2),
+    taskOutputExpansionFactor: positiveNumber(env, 'TASK_OUTPUT_EXPANSION_FACTOR', 1.5),
+    taskVideoRunOverheadBytes: positiveInteger(env, 'TASK_VIDEO_RUN_OVERHEAD_BYTES', maxLogcatBytes + 64 * 1024 * 1024),
     maxProcessOutputBytes: positiveInteger(env, 'MAX_PROCESS_OUTPUT_BYTES', 4 * 1024 * 1024),
-    maxLogcatBytes: positiveInteger(env, 'MAX_LOGCAT_BYTES', 256 * 1024 * 1024),
+    maxLogcatBytes,
     processKillGraceMs: positiveInteger(env, 'PROCESS_KILL_GRACE_MS', 3000),
     pollIntervalMs: positiveInteger(env, 'POLL_INTERVAL_MS', 1000),
   }

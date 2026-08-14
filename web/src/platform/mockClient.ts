@@ -129,8 +129,13 @@ export class MockTestPlatformClient implements TestPlatformClient {
 
   async createTask(input: CreateTaskInput) {
     const apk = this.artifacts.get(input.apkArtifactId) as ApkAsset | undefined
-    const video = this.artifacts.get(input.videoArtifactId) as VideoAsset | undefined
-    if (!apk || !video?.previewUrl) throw new Error('Mock 上传文件记录不存在')
+    const videoIds = input.videoArtifactIds?.length
+      ? input.videoArtifactIds
+      : input.videoArtifactId ? [input.videoArtifactId] : []
+    const videos = videoIds.map((id) => this.artifacts.get(id) as VideoAsset | undefined)
+    if (!apk || !videos.length || videos.some((video) => !video?.previewUrl)) throw new Error('Mock 上传文件记录不存在')
+    const validVideos = videos as VideoAsset[]
+    const video = validVideos[0]
     const connectionMode = input.connectionMode ?? 'auto'
     const devices = await this.listDevices()
     const executions = input.deviceIds.map((deviceId) => {
@@ -157,6 +162,7 @@ export class MockTestPlatformClient implements TestPlatformClient {
       name: input.name,
       apk,
       asset: video,
+      assets: validVideos,
       deviceIds: input.deviceIds,
       connectionMode,
       executions,

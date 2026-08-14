@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite'
 import { describe, expect, it } from 'vitest'
 
+import { createExecutionFailure } from '../../execution/execution-failures.js'
 import { runDatabaseMigrations } from '../migrations/index.js'
 import { ArtifactStore } from './artifact-store.js'
 import { AuditStore } from './audit-store.js'
@@ -348,4 +349,77 @@ describe('多视频任务领域模型', () => {
     })
     context.db.close()
   })
+
+  it('按顺序提供设备视频执行上下文，并聚合视频状态、Attempt 和 blocked 传播', () => {
+    const context = fixture()
+    const first = context.addVideo('first.mp4')
+    const second = context.addVideo('second.mp4')
+    const third = context.addVideo('third.mp4')
+    const device = context.addDevice('device-execution')
+    const task = context.tasks.create({
+      name: '逐视频执行', apkArtifactId: context.apk.id,
+      videoArtifactIds: [second.id, first.id, third.id],
+      deviceIds: [device.id], timeoutSeconds: 300,
+    })
+    const run = task.runs[device.id]
+    context.runs.setTaskStateChangedHandler((taskId) => context.tasks.recompute(taskId))
+    context.videoExecutions.setResultStateChangedHandler((taskId, runId) => {
+      context.runs.recomputeFromVideoResults(taskId, runId)
+    })
+
+    expect(context.videoExecutions.listExecutionsForDeviceRun(task.id, run.id)).toEqual([
+      expect.objectContaining({ sequence: 0, artifactId: second.id, videoOriginalName: 'second.mp4' }),
+      expect.objectContaining({ sequence: 1, artifactId: first.id, videoOriginalName: 'first.mp4' }),
+      expect.objectContaining({ sequence: 2, artifactId: third.id, videoOriginalName: 'third.mp4' }),
+    ])
+
+    const [firstExecution, secondExecution] = context.videoExecutions.listExecutionsForDeviceRun(task.id, run.id)
+    const attempt = context.videoExecutions.createAttempt(firstExecution.videoRunResultId)
+    context.videoExecutions.setState({
+      videoRunResultId: firstExecution.videoRunResultId,
+      runStatus: 'running', phase: 'processing', progress: 50, started: true,
+      executionStatus: 'running', executionFailureCode: null, failure: null,
+    })
+    expect(context.tasks.get(task.id)?.runs[device.id]).toMatchObject({ status: 'running', progress: 17 })
+
+    context.videoExecutions.finishAttempt(attempt.id, { status: 'passed' })
+    context.videoExecutions.recordMediaIntegrity(firstExecution.videoRunResultId, {
+      status: 'passed', message: 'ok', metadata: { sizeBytes: 30, hasAudio: false },
+    })
+    context.videoExecutions.setState({
+      videoRunResultId: firstExecution.videoRunResultId,
+      runStatus: 'passed', phase: 'completed', progress: 100, finished: true,
+      executionStatus: 'passed', executionFailureCode: null, failure: null,
+    })
+
+    const failure = createExecutionFailure({
+      code: 'DEVICE_OFFLINE', phase: 'transferring_input', message: '设备恢复失败',
+    })
+    const failedAttempt = context.videoExecutions.createAttempt(secondExecution.videoRunResultId)
+    context.videoExecutions.finishAttempt(failedAttempt.id, { status: 'failed', failure })
+    context.videoExecutions.setState({
+      videoRunResultId: secondExecution.videoRunResultId,
+      runStatus: 'failed', phase: failure.phase, progress: 100, finished: true,
+      executionStatus: 'failed', executionFailureCode: failure.code, failure,
+    })
+    expect(context.videoExecutions.blockRemaining({
+      taskId: task.id, deviceRunId: run.id, afterSequence: secondExecution.sequence, failure,
+    })).toBe(1)
+
+    const refreshed = context.tasks.get(task.id)!
+    expect(refreshed.runs[device.id]).toMatchObject({
+      status: 'failed', progress: 100, failureCode: 'DEVICE_OFFLINE',
+    })
+    expect(refreshed.videoRuns[task.videos[0].id][device.id]).toMatchObject({
+      status: 'passed', mediaIntegrityStatus: 'passed', attempts: [{ status: 'passed' }],
+    })
+    expect(refreshed.videoRuns[task.videos[1].id][device.id]).toMatchObject({
+      status: 'failed', failureCode: 'DEVICE_OFFLINE', attempts: [{ status: 'failed' }],
+    })
+    expect(refreshed.videoRuns[task.videos[2].id][device.id]).toMatchObject({
+      status: 'blocked', failureCode: 'DEVICE_OFFLINE', attempts: [],
+    })
+    context.db.close()
+  })
+
 })

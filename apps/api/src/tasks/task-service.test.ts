@@ -10,14 +10,18 @@ function artifactsDatabase(createTask = vi.fn((input) => ({ id: 'task-1', ...inp
   return {
     getArtifact(id: string) {
       if (id === 'apk') return { id, kind: 'apk', packageName: 'com.sdktest.platform' }
-      if (id === 'video') return { id, kind: 'video' }
+      if (id === 'video' || id === 'video-2') return { id, kind: 'video', originalName: `${id}.mp4`, sizeBytes: id === 'video' ? 100 : 200, sha256: id }
       return undefined
     },
     createTask,
   } as unknown as PlatformDatabase
 }
 
-const config = { dataDir: '/tmp/cloud-test', minFreeDiskBytes: 1 } as AppConfig
+const config = {
+  dataDir: '/tmp/cloud-test', minFreeDiskBytes: 1, maxTaskVideos: 10, maxVideoBytes: 4_000,
+  maxTaskInputVideoBytes: 10_000, maxLogcatBytes: 100, taskOutputExpansionFactor: 2,
+  taskVideoRunOverheadBytes: 50,
+} as AppConfig
 const diskCheck = async () => 1024
 
 describe('TaskService', () => {
@@ -79,6 +83,65 @@ describe('TaskService', () => {
     }))
     expect(createTask.mock.calls[0]?.[0]).not.toHaveProperty('endpoints')
     expect(queue.enqueueTask).toHaveBeenCalledWith('task-1')
+  })
+
+  it('接受有序 videoArtifactIds，按动态预算检查磁盘并保持顺序写入领域层', async () => {
+    const createTask = vi.fn((input) => ({ id: 'task-multi', ...input }))
+    const database = artifactsDatabase(createTask)
+    const registry = {
+      resolveExecutionEndpoint: vi.fn(async (deviceId: string) => ({
+        id: `usb-${deviceId}`, kind: 'usb', adbSerial: deviceId, status: 'online',
+      })),
+    } as unknown as DeviceRegistryService
+    const queue = { assertAccepting: vi.fn(), enqueueTask: vi.fn() } as unknown as DeviceQueueManager
+    const check = vi.fn(async () => 99_999)
+    const service = new TaskService(database, registry, queue, config, check)
+
+    await service.create({
+      name: '多视频任务', apkArtifactId: 'apk', videoArtifactIds: ['video-2', 'video'],
+      deviceIds: ['device-1', 'device-2'], testPlan: { type: 'sdk-video-processing-compatibility' },
+    })
+
+    // 300 输入 + 300*2*2 输出估算 + 2 视频*2 设备*50 运行开销 + 1 安全余量。
+    expect(check).toHaveBeenCalledWith('/tmp/cloud-test', 1_701)
+    expect(createTask).toHaveBeenCalledWith(expect.objectContaining({
+      videoArtifactIds: ['video-2', 'video'],
+    }))
+    expect(queue.enqueueTask).toHaveBeenCalledWith('task-multi')
+  })
+
+  it('继续兼容旧 videoArtifactId，并归一化成 videoArtifactIds', async () => {
+    const createTask = vi.fn((input) => ({ id: 'task-legacy', ...input }))
+    const database = artifactsDatabase(createTask)
+    const registry = {
+      resolveExecutionEndpoint: vi.fn(async () => ({ id: 'usb-1', kind: 'usb', adbSerial: 'one', status: 'online' })),
+    } as unknown as DeviceRegistryService
+    const queue = { assertAccepting: vi.fn(), enqueueTask: vi.fn() } as unknown as DeviceQueueManager
+    const service = new TaskService(database, registry, queue, config, diskCheck)
+
+    await service.create({
+      name: '旧客户端', apkArtifactId: 'apk', videoArtifactId: 'video', deviceIds: ['device-1'],
+      testPlan: { type: 'sdk-video-processing-compatibility' },
+    })
+
+    expect(createTask).toHaveBeenCalledWith(expect.objectContaining({ videoArtifactIds: ['video'] }))
+  })
+
+  it.each([
+    [{ videoArtifactIds: [] }, 'VIDEO_REQUIRED'],
+    [{ videoArtifactIds: ['video', 'video'] }, 'DUPLICATE_VIDEO_ID'],
+    [{ videoArtifactIds: ['missing'] }, 'VIDEO_NOT_FOUND'],
+  ])('拒绝非法多视频入参 %#', async (videoInput, code) => {
+    const database = artifactsDatabase()
+    const registry = { resolveExecutionEndpoint: vi.fn() } as unknown as DeviceRegistryService
+    const queue = { assertAccepting: vi.fn(), enqueueTask: vi.fn() } as unknown as DeviceQueueManager
+    const service = new TaskService(database, registry, queue, config, diskCheck)
+
+    await expect(service.create({
+      name: '非法多视频', apkArtifactId: 'apk', ...videoInput, deviceIds: ['device-1'],
+      testPlan: { type: 'sdk-video-processing-compatibility' },
+    })).rejects.toMatchObject({ statusCode: 400, code })
+    expect(registry.resolveExecutionEndpoint).not.toHaveBeenCalled()
   })
 
   it('全任务 network 模式会统一传给每台物理设备的解析模块', async () => {

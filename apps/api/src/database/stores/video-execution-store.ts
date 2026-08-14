@@ -1,7 +1,11 @@
 import { randomUUID } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
 
-import type { RunStatus, VideoRunAttemptView } from '../../types.js'
+import type { VideoRunExecution } from '../contracts.js'
+import { createExecutionFailure, serializeExecutionFailure, type ExecutionFailure } from '../../execution/execution-failures.js'
+import type {
+  DeviceRunPhase, ExecutionStatus, MediaIntegrityResult, RunStatus, VideoRunAttemptView,
+} from '../../types.js'
 import { asNumber, asString, now, type Row } from './shared.js'
 
 export interface TaskVideoRecord {
@@ -36,7 +40,13 @@ export interface VideoRunResultRecord {
 
 /** Owns ordered TaskVideo membership, the video/device result matrix, and attempt history. */
 export class VideoExecutionStore {
+  private onResultStateChanged: (taskId: string, deviceRunId: string) => void = () => undefined
+
   constructor(private readonly db: DatabaseSync) {}
+
+  setResultStateChangedHandler(handler: (taskId: string, deviceRunId: string) => void) {
+    this.onResultStateChanged = handler
+  }
 
   createMatrix(input: {
     taskId: string
@@ -86,6 +96,29 @@ export class VideoExecutionStore {
     }))
   }
 
+  listExecutionsForDeviceRun(taskId: string, deviceRunId: string): VideoRunExecution[] {
+    return (this.db.prepare(`
+      SELECT vrr.id AS video_run_result_id, tv.id AS task_video_id,
+             tv.artifact_id, tv.sequence, tv.display_name,
+             artifacts.storage_path AS video_path, artifacts.original_name AS video_original_name,
+             vrr.status AS video_run_status
+      FROM video_run_results vrr
+      JOIN task_videos tv ON tv.id = vrr.task_video_id
+      JOIN artifacts ON artifacts.id = tv.artifact_id
+      WHERE vrr.task_id = ? AND vrr.device_run_id = ?
+      ORDER BY tv.sequence
+    `).all(taskId, deviceRunId) as Row[]).map((row) => ({
+      videoRunResultId: asString(row.video_run_result_id),
+      taskVideoId: asString(row.task_video_id),
+      artifactId: asString(row.artifact_id),
+      sequence: asNumber(row.sequence),
+      displayName: asString(row.display_name) || asString(row.video_original_name) || 'input.mp4',
+      videoPath: asString(row.video_path),
+      videoOriginalName: asString(row.video_original_name) || 'input.mp4',
+      runStatus: asString(row.video_run_status) as RunStatus,
+    }))
+  }
+
   getResult(videoRunResultId: string): VideoRunResultRecord | undefined {
     const row = this.db.prepare(`
       SELECT video_run_results.*, device_runs.device_id
@@ -105,6 +138,120 @@ export class VideoExecutionStore {
       WHERE video_run_results.task_id = ?
       ORDER BY task_videos.sequence, device_runs.rowid
     `).all(taskId) as Row[]).map((row) => this.mapResult(row))
+  }
+
+  listResultsForDeviceRun(deviceRunId: string): VideoRunResultRecord[] {
+    return (this.db.prepare(`
+      SELECT video_run_results.*, device_runs.device_id
+      FROM video_run_results
+      JOIN task_videos ON task_videos.id = video_run_results.task_video_id
+      JOIN device_runs ON device_runs.id = video_run_results.device_run_id
+      WHERE video_run_results.device_run_id = ?
+      ORDER BY task_videos.sequence
+    `).all(deviceRunId) as Row[]).map((row) => this.mapResult(row))
+  }
+
+  setState(input: {
+    videoRunResultId: string
+    runStatus?: RunStatus
+    phase?: DeviceRunPhase
+    progress?: number
+    failureCode?: string | null
+    failureMessage?: string | null
+    failure?: ExecutionFailure | null
+    executionStatus?: ExecutionStatus
+    executionFailureCode?: string | null
+    started?: boolean
+    finished?: boolean
+  }) {
+    const current = this.db.prepare('SELECT * FROM video_run_results WHERE id = ?')
+      .get(input.videoRunResultId) as Row | undefined
+    if (!current) throw new Error(`视频执行结果 ${input.videoRunResultId} 不存在`)
+    const timestamp = now()
+    const phase = input.phase ?? (asString(current.phase) || 'validating_device') as DeviceRunPhase
+    const legacyFailureChanged = input.failureCode !== undefined || input.failureMessage !== undefined
+    const legacyCode = input.failureCode === undefined ? asString(current.failure_code) || null : input.failureCode
+    const legacyMessage = input.failureMessage === undefined ? asString(current.failure_message) || null : input.failureMessage
+    const failure = input.failure !== undefined
+      ? input.failure
+      : legacyFailureChanged && legacyCode
+        ? createExecutionFailure({ code: legacyCode, phase, message: legacyMessage || legacyCode })
+        : legacyFailureChanged ? null : undefined
+    const failureCode = failure === undefined ? legacyCode : failure?.code ?? null
+    const failureMessage = failure === undefined ? legacyMessage : failure?.message ?? null
+    const failureJson = failure === undefined
+      ? asString(current.execution_failure_json) || null
+      : serializeExecutionFailure(failure)
+
+    this.db.prepare(`
+      UPDATE video_run_results SET status = ?, phase = ?, progress = ?,
+        failure_code = ?, failure_message = ?, execution_status = ?, execution_failure_code = ?,
+        execution_failure_json = ?, started_at = ?, finished_at = ?
+      WHERE id = ?
+    `).run(
+      input.runStatus ?? asString(current.status),
+      phase,
+      input.progress ?? asNumber(current.progress),
+      failureCode,
+      failureMessage,
+      input.executionStatus ?? (asString(current.execution_status) || 'pending'),
+      input.executionFailureCode === undefined
+        ? asString(current.execution_failure_code) || null
+        : input.executionFailureCode,
+      failureJson,
+      input.started ? timestamp : asString(current.started_at) || null,
+      input.finished ? timestamp : asString(current.finished_at) || null,
+      input.videoRunResultId,
+    )
+    this.onResultStateChanged(asString(current.task_id), asString(current.device_run_id))
+  }
+
+  blockRemaining(input: {
+    taskId: string
+    deviceRunId: string
+    afterSequence: number
+    failure: ExecutionFailure
+  }) {
+    const timestamp = now()
+    const result = this.db.prepare(`
+      UPDATE video_run_results
+      SET status = 'blocked', progress = 100,
+          failure_code = ?, failure_message = ?, execution_status = 'failed',
+          execution_failure_code = ?, execution_failure_json = ?, finished_at = ?
+      WHERE task_id = ? AND device_run_id = ? AND status = 'queued'
+        AND task_video_id IN (
+          SELECT id FROM task_videos WHERE task_id = ? AND sequence > ?
+        )
+    `).run(
+      input.failure.code, input.failure.message, input.failure.code,
+      serializeExecutionFailure(input.failure), timestamp,
+      input.taskId, input.deviceRunId, input.taskId, input.afterSequence,
+    )
+    if (result.changes > 0) this.onResultStateChanged(input.taskId, input.deviceRunId)
+    return result.changes
+  }
+
+  cancelForTask(taskId: string, timestamp: string) {
+    const failure = createExecutionFailure({
+      code: 'TASK_CANCELLED', phase: 'validating_device', message: '用户取消任务',
+    })
+    this.db.prepare(`
+      UPDATE video_run_attempts
+      SET status = 'blocked', failure_code = ?, failure_message = ?,
+          execution_failure_json = ?, finished_at = ?
+      WHERE status = 'running' AND video_run_result_id IN (
+        SELECT id FROM video_run_results WHERE task_id = ?
+      )
+    `).run(failure.code, failure.message, serializeExecutionFailure(failure), timestamp, taskId)
+    this.db.prepare(`
+      UPDATE video_run_results
+      SET status = 'blocked', progress = 100,
+          failure_code = ?, failure_message = ?, execution_status = 'cancelled',
+          execution_failure_code = ?, execution_failure_json = ?, finished_at = ?
+      WHERE task_id = ? AND status IN ('queued', 'running')
+    `).run(
+      failure.code, failure.message, failure.code, serializeExecutionFailure(failure), timestamp, taskId,
+    )
   }
 
   createAttempt(videoRunResultId: string, input: {
@@ -137,6 +284,42 @@ export class VideoExecutionStore {
       input.evidenceDirectory ?? null, input.startedAt ?? createdAt, input.finishedAt ?? null, createdAt,
     )
     return this.listAttempts(videoRunResultId).find((attempt) => attempt.id === id)!
+  }
+
+  finishAttempt(attemptId: string, input: {
+    status: Extract<RunStatus, 'passed' | 'failed' | 'blocked'>
+    failure?: ExecutionFailure | null
+    finishedAt?: string
+  }) {
+    const result = this.db.prepare(`
+      UPDATE video_run_attempts
+      SET status = ?, failure_code = ?, failure_message = ?, execution_failure_json = ?, finished_at = ?
+      WHERE id = ? AND status = 'running'
+    `).run(
+      input.status,
+      input.failure?.code ?? null,
+      input.failure?.message ?? null,
+      serializeExecutionFailure(input.failure),
+      input.finishedAt ?? now(),
+      attemptId,
+    )
+    return result.changes === 1
+  }
+
+  recordMediaIntegrity(videoRunResultId: string, result: MediaIntegrityResult) {
+    const current = this.getResult(videoRunResultId)
+    if (!current) throw new Error(`视频执行结果 ${videoRunResultId} 不存在`)
+    this.db.prepare(`
+      UPDATE video_run_results
+      SET media_integrity_status = ?, media_integrity_failure_code = ?, media_metadata = ?
+      WHERE id = ?
+    `).run(
+      result.status,
+      result.failureCode ?? null,
+      result.metadata ? JSON.stringify(result.metadata) : null,
+      videoRunResultId,
+    )
+    this.onResultStateChanged(current.taskId, current.deviceRunId)
   }
 
   listAttempts(videoRunResultId: string): VideoRunAttemptView[] {
