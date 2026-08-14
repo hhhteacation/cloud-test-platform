@@ -9,7 +9,9 @@ import { AuditStore } from './database/stores/audit-store.js'
 import { DeviceRunStore } from './database/stores/device-run-store.js'
 import { DeviceStore, type UpsertAdbDeviceInput } from './database/stores/device-store.js'
 import { DeviceEndpointStore, type UpsertEndpointInput } from './database/stores/device-endpoint-store.js'
+import { NetworkConnectionOperationStore } from './database/stores/network-connection-operation-store.js'
 import { TaskStore } from './database/stores/task-store.js'
+import { VideoExecutionStore } from './database/stores/video-execution-store.js'
 import type { ArtifactRecord, CheckResult, MediaIntegrityResult } from './types.js'
 
 export type { DeviceRunExecution, DeviceRunJob } from './database/contracts.js'
@@ -32,7 +34,9 @@ export class PlatformDatabase {
   readonly deviceEndpoints: DeviceEndpointStore
   readonly deviceRuns: DeviceRunStore
   readonly audit: AuditStore
+  readonly videoExecutions: VideoExecutionStore
   readonly tasks: TaskStore
+  readonly networkConnectionOperations: NetworkConnectionOperationStore
 
   constructor(options: PlatformDatabaseOptions = {}) {
     const resolvedDatabasePath = options.databasePath ?? databasePath
@@ -45,7 +49,17 @@ export class PlatformDatabase {
     this.deviceEndpoints = new DeviceEndpointStore(this.db)
     this.audit = new AuditStore(this.db)
     this.deviceRuns = new DeviceRunStore(this.db, this.audit)
-    this.tasks = new TaskStore(this.db, this.artifacts, this.deviceRuns, this.audit)
+    this.videoExecutions = new VideoExecutionStore(this.db)
+    this.tasks = new TaskStore(
+      this.db, this.artifacts, this.deviceRuns, this.audit, this.videoExecutions,
+      {
+        maxVideosPerTask: config.maxTaskVideos,
+        maxVideoBytes: config.maxVideoBytes,
+        maxTotalVideoBytes: config.maxTaskInputVideoBytes,
+      },
+    )
+    this.networkConnectionOperations = new NetworkConnectionOperationStore(this.db)
+    this.networkConnectionOperations.markInterrupted()
     this.deviceRuns.setTaskStateChangedHandler((taskId) => this.tasks.recompute(taskId))
 
     const seedSerial = Object.hasOwn(options, 'deviceSerial') ? options.deviceSerial : config.deviceSerial
@@ -71,6 +85,8 @@ export class PlatformDatabase {
   upsertDeviceEndpoint(input: UpsertEndpointInput) { return this.deviceEndpoints.upsert(input) }
   updateDeviceEndpointStatus(id: string, status: Parameters<DeviceEndpointStore['updateStatus']>[1], lastError?: string) { return this.deviceEndpoints.updateStatus(id, status, lastError) }
   removeDeviceEndpoint(id: string) { return this.deviceEndpoints.remove(id) }
+  hasActiveNetworkConnectionOperation() { return this.networkConnectionOperations.hasActive() }
+  getNetworkConnectionOperation(id: string) { return this.networkConnectionOperations.get(id) }
 
   createTask(input: Parameters<TaskStore['create']>[0]) { return this.tasks.create(input) }
   listTasks() { return this.tasks.list() }
@@ -104,8 +120,19 @@ export class PlatformDatabase {
     return this.audit.addLog(taskId, runId, message, level)
   }
   upsertCheck(runId: string, check: CheckResult) { return this.audit.upsertCheck(runId, check) }
+  addVideoLog(taskId: string, runId: string, videoRunResultId: string, message: string, level = 'info') {
+    return this.audit.addVideoLog(taskId, runId, videoRunResultId, message, level)
+  }
+  upsertVideoCheck(runId: string, videoRunResultId: string, check: CheckResult) {
+    return this.audit.upsertVideoCheck(runId, videoRunResultId, check)
+  }
+
+  createVideoAttempt(videoRunResultId: string, input?: Parameters<VideoExecutionStore['createAttempt']>[1]) {
+    return this.videoExecutions.createAttempt(videoRunResultId, input)
+  }
 
   addOutput(input: Parameters<ArtifactStore['addOutput']>[0]) { return this.artifacts.addOutput(input) }
+  addVideoOutput(input: Parameters<ArtifactStore['addVideoOutput']>[0]) { return this.artifacts.addVideoOutput(input) }
   getOutput(id: string) { return this.artifacts.getOutput(id) }
   getOutputRecord(id: string) { return this.artifacts.getOutputRecord(id) }
 }

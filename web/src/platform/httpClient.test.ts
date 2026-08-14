@@ -82,6 +82,22 @@ describe('HttpTestPlatformClient task normalization', () => {
     expect(task?.capabilities).toEqual(serverTask.capabilities)
   })
 
+  it('一键连接全部发送显式空 JSON 对象，避免 Fastify 空 JSON body 解析失败', async () => {
+    const started = { operationId: 'network-connect-1', status: 'queued', totalCount: 2 }
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(started), {
+      status: 202, headers: { 'Content-Type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const client = new HttpTestPlatformClient('/api')
+    await expect(client.startNetworkConnectionOperation()).resolves.toEqual(started)
+    expect(fetchMock).toHaveBeenCalledWith('/api/devices/network/connect-all', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    })
+  })
+
   it('DELETE 联网 Endpoint 的 204 响应不会继续解析 JSON', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(null, { status: 204 })))
     const client = new HttpTestPlatformClient('/api')

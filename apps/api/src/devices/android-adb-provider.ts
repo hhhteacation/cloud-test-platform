@@ -1,12 +1,12 @@
 import { config } from '../config.js'
-import { runProcess, type ProcessResult } from '../process.js'
+import { ProcessError, runProcess, type ProcessResult, type RunProcessOptions } from '../process.js'
 import type { DeviceDiscoveryCandidate, DeviceConnectionStatus } from '../types.js'
 import type { DeviceDiscoveryProvider } from './device-provider.js'
 
 export type AdbCommandExecutor = (
   command: string,
   args: string[],
-  options?: { timeoutMs?: number },
+  options?: Pick<RunProcessOptions, 'timeoutMs' | 'signal'>,
 ) => Promise<ProcessResult>
 
 interface AdbListEntry {
@@ -95,17 +95,50 @@ export class AndroidAdbDeviceProvider implements DeviceDiscoveryProvider {
     }
   }
 
-  async connectNetwork(host: string, port: number): Promise<DeviceDiscoveryCandidate> {
+  async connectNetwork(host: string, port: number, options: { signal?: AbortSignal } = {}): Promise<DeviceDiscoveryCandidate> {
     const normalizedHost = host.replace(/^\[|\]$/g, '')
     const serial = normalizedHost.includes(':') ? `[${normalizedHost}]:${port}` : `${normalizedHost}:${port}`
     try {
-      await this.execute(this.adbPath, ['connect', serial], { timeoutMs: 15_000 })
-      const listed = await this.execute(this.adbPath, ['devices', '-l'], { timeoutMs: 10_000 })
+      const connect = await this.execute(this.adbPath, ['connect', serial], { timeoutMs: 15_000, signal: options.signal })
+      const listed = await this.execute(this.adbPath, ['devices', '-l'], { timeoutMs: 10_000, signal: options.signal })
       const entry = parseAdbDevices(listed.stdout).find((item) => item.serial === serial)
-      if (!entry) return { serial, host, port, platform: 'android', connectionStatus: 'offline' }
-      return { ...(await this.describe(entry)), host, port }
-    } catch {
-      return { serial, host, port, platform: 'android', connectionStatus: 'offline' }
+      if (!entry) {
+        const detail = `${connect.stdout}\n${connect.stderr}`.trim()
+        const code = classifyAdbDiagnostic(detail)
+        return {
+          serial, host, port, platform: 'android', connectionStatus: 'offline',
+          ...diagnostic(code, diagnosticMessage(connect, 'adb devices 未返回目标联网设备'), connect),
+        }
+      }
+      const described = await this.describe(entry, options.signal, true)
+      if (described.connectionStatus !== 'online' && !described.failureCode) {
+        const code = described.connectionStatus === 'unauthorized' ? 'ADB_UNAUTHORIZED' : described.connectionStatus === 'offline' ? 'ADB_DEVICE_OFFLINE' : 'ADB_COMMAND_FAILED'
+        return {
+          ...described, host, port,
+          ...diagnostic(code, described.connectionStatus === 'unauthorized' ? 'ADB 设备未授权' : `ADB 设备状态：${described.connectionStatus}`, connect),
+        }
+      }
+      return { ...described, host, port }
+    } catch (error) {
+      // Cancellation is a domain-visible outcome, not an offline diagnosis. Keep
+      // the ProcessRunner result so the operation store can retain the evidence
+      // collected before the adb child was terminated.
+      if (options.signal?.aborted) {
+        const evidence = error instanceof ProcessError ? error.result : undefined
+        return {
+          serial, host, port, platform: 'android', connectionStatus: 'offline',
+          ...diagnostic('NETWORK_CONNECTION_CANCELLED', error instanceof Error ? error.message : '联网连接已取消', evidence),
+        }
+      }
+      if (error instanceof ProcessError) {
+        const evidence = error.result
+        const message = evidence?.stderr.trim() || evidence?.stdout.trim() || error.message
+        return {
+          serial, host, port, platform: 'android', connectionStatus: 'offline',
+          ...diagnostic(classifyAdbFailure(error, message), message, evidence),
+        }
+      }
+      return { serial, host, port, platform: 'android', connectionStatus: 'offline', failureCode: 'ADB_COMMAND_FAILED', failureMessage: error instanceof Error ? error.message : String(error) }
     }
   }
 
@@ -113,7 +146,7 @@ export class AndroidAdbDeviceProvider implements DeviceDiscoveryProvider {
     await this.execute(this.adbPath, ['disconnect', serial], { timeoutMs: 10_000 }).catch(() => undefined)
   }
 
-  private async describe(entry: AdbListEntry): Promise<DeviceDiscoveryCandidate> {
+  private async describe(entry: AdbListEntry, signal?: AbortSignal, includeDiagnostics = false): Promise<DeviceDiscoveryCandidate> {
     const status = connectionStatus(entry.state)
     const fallbackModel = entry.attributes.model?.replaceAll('_', ' ')
     if (status !== 'online') {
@@ -130,7 +163,7 @@ export class AndroidAdbDeviceProvider implements DeviceDiscoveryProvider {
       const result = await this.execute(
         this.adbPath,
         ['-s', entry.serial, 'shell', 'getprop'],
-        { timeoutMs: 15_000 },
+        { timeoutMs: 15_000, signal },
       )
       const props = parseGetProp(result.stdout)
       const hardwareSerial = first(props, 'ro.serialno', 'ro.boot.serialno', 'ro.vendor.serialno')
@@ -154,14 +187,52 @@ export class AndroidAdbDeviceProvider implements DeviceDiscoveryProvider {
         securityPatch: first(props, 'ro.build.version.security_patch'),
         connectionStatus: 'online',
       }
-    } catch {
+    } catch (error) {
+      if (signal?.aborted) throw error
       return {
         serial: entry.serial,
         platform: 'android',
         model: fallbackModel,
         name: fallbackModel ?? entry.serial,
         connectionStatus: 'unknown',
+        ...(includeDiagnostics ? {
+          failureCode: error instanceof ProcessError ? classifyAdbFailure(error, error.result?.stderr || error.message) : 'ADB_COMMAND_FAILED',
+          failureMessage: error instanceof Error ? error.message : String(error),
+          ...(error instanceof ProcessError && error.result ? diagnosticEvidence(error.result) : {}),
+        } : {}),
       }
     }
   }
+}
+
+function diagnosticEvidence(result?: ProcessResult) {
+  return result ? {
+    adbExitCode: result.code,
+    adbStdout: result.stdout,
+    adbStderr: result.stderr,
+    adbStdoutTruncated: result.stdoutTruncated,
+    adbStderrTruncated: result.stderrTruncated,
+  } : {}
+}
+
+function diagnosticMessage(result: ProcessResult | undefined, fallback: string) {
+  return result?.stderr.trim() || result?.stdout.trim() || fallback
+}
+
+function diagnostic(code: string, message: string, result?: ProcessResult) {
+  return { failureCode: code, failureMessage: message, ...diagnosticEvidence(result) }
+}
+
+function classifyAdbDiagnostic(detail: string) {
+  const value = detail.toLowerCase()
+  if (value.includes('timeout') || value.includes('timed out') || value.includes('超时')) return 'ADB_CONNECT_TIMEOUT'
+  if (value.includes('refused') || value.includes('拒绝')) return 'ADB_PORT_REFUSED'
+  if (value.includes('unreachable') || value.includes('no route') || value.includes('network is down')) return 'ADB_NETWORK_UNREACHABLE'
+  if (value.includes('unauthorized') || value.includes('未授权')) return 'ADB_UNAUTHORIZED'
+  if (value.includes('offline')) return 'ADB_DEVICE_OFFLINE'
+  return 'ADB_COMMAND_FAILED'
+}
+
+function classifyAdbFailure(error: ProcessError, detail: string) {
+  return classifyAdbDiagnostic(`${error.message} ${detail}`)
 }

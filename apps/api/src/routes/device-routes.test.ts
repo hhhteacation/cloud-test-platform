@@ -15,6 +15,9 @@ function registryStub(overrides: Partial<DeviceRegistryService> = {}) {
     disconnectNetwork: vi.fn(),
     refreshNetwork: vi.fn(),
     removeNetworkEndpoint: vi.fn(),
+    startNetworkConnectionOperation: vi.fn(),
+    getNetworkConnectionOperation: vi.fn(),
+    cancelNetworkConnectionOperation: vi.fn(),
     ...overrides,
   } as unknown as DeviceRegistryService
 }
@@ -92,16 +95,98 @@ describe('device routes', () => {
     await app.close()
   })
 
+  it('批量联网连接支持创建、查询和取消', async () => {
+    const operation = { id: 'network-connect-1', status: 'queued', totalCount: 2, succeeded: 0, failed: 0, skipped: 0, cancelled: 0, cancelRequested: false, items: [] }
+    const registry = registryStub({
+      startNetworkConnectionOperation: vi.fn(() => ({ operationId: operation.id, status: operation.status, totalCount: operation.totalCount })),
+      getNetworkConnectionOperation: vi.fn(() => operation),
+      cancelNetworkConnectionOperation: vi.fn(() => ({ ...operation, cancelRequested: true })),
+    })
+    const app = Fastify()
+    registerDeviceRoutes(app, registry)
+
+    const created = await app.inject({ method: 'POST', url: '/api/devices/network/connect-all' })
+    expect(created.statusCode).toBe(202)
+    expect(created.json()).toEqual({ operationId: 'network-connect-1', status: 'queued', totalCount: 2 })
+    expect((await app.inject({ method: 'GET', url: '/api/devices/network/connect-operations/network-connect-1' })).statusCode).toBe(200)
+    const cancelled = await app.inject({ method: 'POST', url: '/api/devices/network/connect-operations/network-connect-1/cancel' })
+    expect(cancelled.json()).toMatchObject({ cancelRequested: true })
+    await app.close()
+  })
+
+  it.each([
+    ['NO_NETWORK_ENDPOINTS', '没有配置联网 Endpoint 的设备', 409],
+    ['NETWORK_CONNECT_OPERATION_ALREADY_RUNNING', '已有联网批量连接操作正在执行', 409],
+  ] as const)('批量启动错误 %s 映射为明确响应', async (code, message, statusCode) => {
+    const registry = registryStub({
+      startNetworkConnectionOperation: vi.fn(() => { throw new DeviceRegistrationError(message, code, statusCode) }),
+    })
+    const app = Fastify()
+    registerDeviceRoutes(app, registry)
+
+    const response = await app.inject({ method: 'POST', url: '/api/devices/network/connect-all' })
+    expect(response.statusCode).toBe(statusCode)
+    expect(response.json()).toEqual({ code, message })
+    await app.close()
+  })
+
+  it('批量查询不存在的操作返回 404', async () => {
+    const registry = registryStub({
+      getNetworkConnectionOperation: vi.fn(() => { throw new DeviceRegistrationError('联网批量连接操作不存在', 'NETWORK_CONNECT_OPERATION_NOT_FOUND', 404) }),
+    })
+    const app = Fastify()
+    registerDeviceRoutes(app, registry)
+
+    const response = await app.inject({ method: 'GET', url: '/api/devices/network/connect-operations/not-found' })
+    expect(response.statusCode).toBe(404)
+    expect(response.json()).toEqual({ code: 'NETWORK_CONNECT_OPERATION_NOT_FOUND', message: '联网批量连接操作不存在' })
+    await app.close()
+  })
+
+  it('批量取消已完成操作保持原结果不变', async () => {
+    const operation = { id: 'network-connect-done', status: 'completed', totalCount: 1, succeeded: 1, failed: 0, skipped: 0, cancelled: 0, cancelRequested: false, items: [{ id: 'item-1', operationId: 'network-connect-done', deviceId: 'device-1', endpointId: 'endpoint-1', host: '192.0.2.1', port: 5555, status: 'succeeded' }] }
+    const registry = registryStub({
+      getNetworkConnectionOperation: vi.fn(() => operation),
+      cancelNetworkConnectionOperation: vi.fn(() => operation),
+    })
+    const app = Fastify()
+    registerDeviceRoutes(app, registry)
+
+    const response = await app.inject({ method: 'POST', url: '/api/devices/network/connect-operations/network-connect-done/cancel' })
+    expect(response.statusCode).toBe(200)
+    expect(response.json()).toEqual(operation)
+    expect(registry.cancelNetworkConnectionOperation).toHaveBeenCalledWith('network-connect-done')
+    await app.close()
+  })
+
   it('身份不能确认时返回明确 409 错误而不伪装成成功', async () => {
     const registry = registryStub({
-      connectNetwork: vi.fn(async () => { throw new DeviceRegistrationError('需要人工确认', 'DEVICE_IDENTITY_MISMATCH', 409) }),
+      connectNetwork: vi.fn(async () => {
+        throw new DeviceRegistrationError('需要人工确认', 'DEVICE_IDENTITY_MISMATCH', 409, {
+          adbExitCode: 1,
+          adbStdout: 'adb stdout',
+          adbStderr: 'identity mismatch',
+          adbStdoutTruncated: false,
+          adbStderrTruncated: false,
+        })
+      }),
     })
     const app = Fastify()
     registerDeviceRoutes(app, registry)
 
     const response = await app.inject({ method: 'POST', url: '/api/devices/device-1/endpoints/network', payload: { host: '192.168.1.30', port: 5555 } })
     expect(response.statusCode).toBe(409)
-    expect(response.json()).toEqual({ code: 'DEVICE_IDENTITY_MISMATCH', message: '需要人工确认' })
+    expect(response.json()).toEqual({
+      code: 'DEVICE_IDENTITY_MISMATCH',
+      message: '需要人工确认',
+      evidence: {
+        adbExitCode: 1,
+        adbStdout: 'adb stdout',
+        adbStderr: 'identity mismatch',
+        adbStdoutTruncated: false,
+        adbStderrTruncated: false,
+      },
+    })
     await app.close()
   })
 })

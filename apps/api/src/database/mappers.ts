@@ -1,4 +1,4 @@
-import type { ArtifactRecord, DeviceProfile, TestOutput } from '../types.js'
+import type { ArtifactRecord, ArtifactView, DeviceProfile, TestOutput } from '../types.js'
 
 export type DatabaseRow = Record<string, unknown>
 
@@ -39,7 +39,8 @@ export function mapDeviceRow(row: DatabaseRow): DeviceProfile {
 export function mapOutputRow(row: DatabaseRow): TestOutput {
   const id = stringValue(row.id)
   return {
-    id, taskId: stringValue(row.task_id), deviceRunId: stringValue(row.device_run_id), kind: 'processed_video',
+    id, taskId: stringValue(row.task_id), deviceRunId: stringValue(row.device_run_id),
+    videoRunResultId: stringValue(row.video_run_result_id) || undefined, kind: 'processed_video',
     name: stringValue(row.name), mimeType: 'video/mp4', sizeBytes: numberValue(row.size_bytes), sha256: stringValue(row.sha256),
     previewUrl: `/api/outputs/${id}/content`, downloadUrl: `/api/outputs/${id}/download`,
   }

@@ -14,15 +14,27 @@ A cross-platform SDK validation objective containing one or more platform-specif
 
 ## Task
 
-A platform-specific test intent combining an application Artifact, a media Artifact, one Test Plan, and a target Device Set.
+A platform-specific test intent combining an application Artifact, one or more ordered media inputs, one Test Plan, and a target Device Set.
+
+## Task Video
+
+The stable identity and order of one immutable video Artifact inside a Task. A Task Video is not the file content itself and cannot be reordered after the Task is created.
 
 ## Device Run
 
 The logical target created when one Task is assigned to one Device.
 
+## Video Run Result
+
+The independently explainable result of one Task Video inside one Device Run. It owns video-scoped status, Checks, Logs, Evidence, media integrity, and the Primary Output.
+
 ## Attempt
 
-One physical execution try for a Device Run. A retry always creates a new Attempt and never overwrites a previous one.
+One physical execution try for a retryable execution scope, such as a Device Run or Video Run Result. A retry always creates a new Attempt and never overwrites a previous one.
+
+## Primary Output
+
+The single official processed video selected for left-right comparison from one Video Run Result. Diagnostic files and supporting media remain Evidence rather than additional Primary Outputs.
 
 ## Device Snapshot
 
