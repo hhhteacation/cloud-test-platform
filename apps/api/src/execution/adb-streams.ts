@@ -258,6 +258,8 @@ export class AdbStreams {
         signal.removeEventListener('abort', abort)
         this.processes.remove(taskId, child)
         if (error) {
+          child.stdout.unpipe(output)
+          child.stdout.resume()
           output.destroy()
           await rm(targetPath, { force: true }).catch(() => undefined)
           reject(error)
@@ -268,6 +270,7 @@ export class AdbStreams {
       }
 
       child.on('error', (error) => { void finish(error) })
+      output.on('error', (error) => { void finish(errorFromUnknown(error)) })
       child.on('close', (code) => {
         void finish(code === 0 ? undefined : new Error(signal.aborted ? '截图已取消' : '截图失败'))
       })

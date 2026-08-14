@@ -182,6 +182,7 @@ export interface TestOutput {
   id: string
   taskId: string
   deviceRunId: string
+  videoRunResultId?: string
   kind: 'processed_video'
   name: string
   mimeType: 'video/mp4'
@@ -189,6 +190,53 @@ export interface TestOutput {
   sha256: string
   previewUrl: string
   downloadUrl: string
+}
+
+export interface TaskVideoView {
+  id: string
+  taskId: string
+  artifactId: string
+  sequence: number
+  displayName: string
+  asset: ArtifactView
+}
+
+export interface VideoRunAttemptView {
+  id: string
+  videoRunResultId: string
+  attemptNumber: number
+  status: RunStatus
+  failureCode?: string
+  failureMessage?: string
+  startedAt?: string
+  finishedAt?: string
+  createdAt: string
+}
+
+export interface VideoRunResultView {
+  id: string
+  taskId: string
+  taskVideoId: string
+  deviceRunId: string
+  deviceId: string
+  status: RunStatus
+  phase?: DeviceRunPhase
+  progress: number
+  checks: CheckResult[]
+  logs: string[]
+  outputs: TestOutput[]
+  primaryOutput?: TestOutput
+  attempts: VideoRunAttemptView[]
+  startedAt?: string
+  finishedAt?: string
+  failureCode?: string
+  failureMessage?: string
+  failure?: ExecutionFailure
+  executionStatus?: ExecutionStatus
+  executionFailureCode?: string
+  mediaIntegrityStatus: MediaIntegrityStatus
+  mediaIntegrityFailureCode?: string
+  mediaMetadata?: MediaMetadata
 }
 
 export interface DeviceRunView {
@@ -259,6 +307,8 @@ export interface TestTaskView {
   name: string
   apk: ArtifactView
   asset: ArtifactView
+  videos: TaskVideoView[]
+  videoRuns: Record<string, Record<string, VideoRunResultView>>
   deviceIds: string[]
   connectionMode?: TaskConnectionMode
   status: TaskStatus
