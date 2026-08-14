@@ -176,13 +176,48 @@ printf 'system failure context line 1\nsystem failure context line 2\n'
     expect(Buffer.byteLength(content)).toBeLessThan(256)
   })
 
-  it('截图命令失败时删除半文件', async () => {
+  it('截图命令成功时等待输出完整落盘', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'adb-screenshot-success-'))
+    const adbPath = path.join(root, 'fake-adb.sh')
+    await writeFile(adbPath, `#!/bin/sh
+printf 'complete-png'
+`)
+    await chmod(adbPath, 0o755)
+    const target = path.join(root, 'screenshots', 'success.png')
+    const streams = new AdbStreams(adbPath, 'serial-1', undefined, { killGraceMs: 10 })
+
+    await streams.captureScreenshot('task-success', target, new AbortController().signal)
+
+    await expect(readFile(target, 'utf8')).resolves.toBe('complete-png')
+  })
+
+  it('截图命令失败时等待输出流关闭后删除半文件', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'adb-screenshot-'))
     const adbPath = await fakeAdb(root)
     const target = path.join(root, 'screenshots', 'failed.png')
     const streams = new AdbStreams(adbPath, 'serial-1', undefined, { killGraceMs: 10 })
 
     await expect(streams.captureScreenshot('task-1', target, new AbortController().signal)).rejects.toThrow('截图失败')
+    await expect(stat(target)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('截图取消时停止进程并删除半文件', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'adb-screenshot-abort-'))
+    const adbPath = path.join(root, 'fake-adb.sh')
+    await writeFile(adbPath, `#!/bin/sh
+printf 'partial-png'
+exec sleep 30
+`)
+    await chmod(adbPath, 0o755)
+    const target = path.join(root, 'screenshots', 'aborted.png')
+    const controller = new AbortController()
+    const streams = new AdbStreams(adbPath, 'serial-1', undefined, { killGraceMs: 10 })
+    const capture = streams.captureScreenshot('task-abort', target, controller.signal)
+    await waitFor(async () => (await stat(target).catch(() => undefined))?.size === 11)
+
+    controller.abort()
+
+    await expect(capture).rejects.toThrow('截图已取消')
     await expect(stat(target)).rejects.toMatchObject({ code: 'ENOENT' })
   })
 })
