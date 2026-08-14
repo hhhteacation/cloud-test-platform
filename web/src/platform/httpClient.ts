@@ -10,6 +10,8 @@ import type {
   TestReport,
   TestTask,
   TaskDeletionReceipt,
+  NetworkConnectionOperation,
+  NetworkConnectionOperationStart,
 } from '../types'
 
 import { ensureTaskCapabilities } from '../features/tasks/taskCapabilities'
@@ -60,6 +62,24 @@ export class HttpTestPlatformClient implements TestPlatformClient {
 
   removeNetworkDevice(deviceId: string, endpointId: string) {
     return this.request<void>(`/devices/${deviceId}/endpoints/network/${endpointId}`, { method: 'DELETE' })
+  }
+
+  startNetworkConnectionOperation() {
+    // Send an explicit empty JSON object so Fastify does not interpret a JSON
+    // content type with an empty body as FST_ERR_CTP_EMPTY_JSON_BODY.
+    return this.request<NetworkConnectionOperationStart>('/devices/network/connect-all', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    })
+  }
+
+  getNetworkConnectionOperation(operationId: string) {
+    return this.request<NetworkConnectionOperation>(`/devices/network/connect-operations/${encodeURIComponent(operationId)}`)
+  }
+
+  cancelNetworkConnectionOperation(operationId: string) {
+    return this.request<NetworkConnectionOperation>(`/devices/network/connect-operations/${encodeURIComponent(operationId)}/cancel`, { method: 'POST' })
   }
 
   registerDevice(serial: string) {

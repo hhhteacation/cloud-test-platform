@@ -7,6 +7,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { deviceEndpointsMigration } from './migrations/003-device-endpoints.js'
+import { networkConnectionOperationsMigration } from './migrations/006-network-connection-operations.js'
 import { DATABASE_MIGRATIONS, migrationChecksum, runDatabaseMigrations, type DatabaseMigration } from './migrations/index.js'
 
 const directories: string[] = []
@@ -27,10 +28,75 @@ describe('数据库迁移', () => {
     expect(first.appliedMigrationIds).toEqual([
       '001-initial-schema', '002-compatibility-columns', '003-device-endpoints',
       '004-task-execution-endpoint-columns', '005-structured-execution-failure',
+      '006-network-connection-operations', '007-preserve-network-connection-snapshots',
       '008-task-videos', '009-video-run-results',
     ])
     expect(second.appliedMigrationIds).toEqual([])
-    expect(db.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get()).toMatchObject({ count: 7 })
+    expect(db.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get()).toMatchObject({ count: 9 })
+    db.close()
+  })
+
+  it('新增联网批量表前生成备份，并保留批量操作快照结构', async () => {
+    const { db, databasePath } = await databaseFixture()
+    runDatabaseMigrations(db, databasePath, DATABASE_MIGRATIONS.slice(0, 5))
+    db.prepare(`
+      INSERT INTO devices (
+        id, name, manufacturer, model, os_version, api_level, architecture, execution_mode, eligible
+      ) VALUES ('legacy-device', '旧设备', 'Example', 'Model', 'Android 15', 35, 'arm64-v8a', 'adb', 1)
+    `).run()
+
+    const result = runDatabaseMigrations(db, databasePath)
+    expect(result.backupPath).toBeTruthy()
+    expect(result.backupPath && existsSync(result.backupPath)).toBe(true)
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('network_connection_operations', 'network_connection_operation_items') ORDER BY name").all()).toEqual([
+      { name: 'network_connection_operation_items' },
+      { name: 'network_connection_operations' },
+    ])
+    expect(db.prepare('SELECT id, name FROM devices WHERE id = ?').get('legacy-device')).toEqual({ id: 'legacy-device', name: '旧设备' })
+    expect((db.prepare('PRAGMA table_info(network_connection_operation_items)').all() as Array<{ name: string }>).map((column) => column.name)).toEqual(expect.arrayContaining([
+      'device_id', 'endpoint_id', 'host', 'port', 'failure_code', 'adb_stdout', 'adb_stderr', 'cancel_reason',
+    ]))
+    db.close()
+  })
+
+  it('007 将 006 的设备与 Endpoint 外键改为不可变快照，并保留历史明细', async () => {
+    const { db, databasePath } = await databaseFixture()
+    runDatabaseMigrations(db, databasePath, DATABASE_MIGRATIONS.slice(0, 5))
+    db.prepare(`
+      INSERT INTO devices (
+        id, name, manufacturer, os_version, api_level, architecture, execution_mode, eligible
+      ) VALUES ('snapshot-device', '快照设备', 'Example', 'Android 15', 35, 'arm64-v8a', 'adb', 1)
+    `).run()
+    db.prepare(`
+      INSERT INTO device_endpoints (
+        id, device_id, kind, adb_serial, host, port, status, created_at, updated_at
+      ) VALUES ('snapshot-endpoint', 'snapshot-device', 'network', '192.0.2.40:5555', '192.0.2.40', 5555, 'offline', ?, ?)
+    `).run('2026-08-13T00:00:00.000Z', '2026-08-13T00:00:00.000Z')
+    runDatabaseMigrations(db, databasePath, [DATABASE_MIGRATIONS[5]])
+    db.prepare(`
+      INSERT INTO network_connection_operations
+        (id, status, total_count, created_at)
+      VALUES ('snapshot-operation', 'completed', 1, '2026-08-13T00:00:00.000Z')
+    `).run()
+    db.prepare(`
+      INSERT INTO network_connection_operation_items
+        (id, operation_id, device_id, endpoint_id, host, port, status)
+      VALUES ('snapshot-item', 'snapshot-operation', 'snapshot-device', 'snapshot-endpoint', '192.0.2.40', 5555, 'succeeded')
+    `).run()
+
+    runDatabaseMigrations(db, databasePath)
+    expect(db.prepare('PRAGMA foreign_key_list(network_connection_operation_items)').all()).toEqual([
+      expect.objectContaining({ table: 'network_connection_operations', from: 'operation_id', on_delete: 'CASCADE' }),
+    ])
+    db.prepare('DELETE FROM device_endpoints WHERE id = ?').run('snapshot-endpoint')
+    db.prepare('DELETE FROM devices WHERE id = ?').run('snapshot-device')
+    expect(db.prepare('SELECT device_id, endpoint_id, status FROM network_connection_operation_items WHERE id = ?').get('snapshot-item')).toEqual({
+      device_id: 'snapshot-device', endpoint_id: 'snapshot-endpoint', status: 'succeeded',
+    })
+    expect(db.prepare('SELECT id, checksum FROM schema_migrations WHERE id = ?').get('006-network-connection-operations')).toMatchObject({
+      id: '006-network-connection-operations', checksum: '5087e4369b28b14cb4fdc12babc58a325eba75da197eb92748995daea6089ab2',
+    })
+    expect(networkConnectionOperationsMigration).toContain('REFERENCES devices(id)')
     db.close()
   })
 
@@ -58,7 +124,8 @@ describe('数据库迁移', () => {
     const result = runDatabaseMigrations(db, databasePath)
     expect(result.appliedMigrationIds).toEqual([
       '003-device-endpoints', '004-task-execution-endpoint-columns',
-      '005-structured-execution-failure', '008-task-videos', '009-video-run-results',
+      '005-structured-execution-failure', '006-network-connection-operations',
+      '007-preserve-network-connection-snapshots', '008-task-videos', '009-video-run-results',
     ])
     expect(db.prepare('SELECT device_id, kind, adb_serial, status FROM device_endpoints').get()).toMatchObject({
       device_id: 'legacy-device', kind: 'usb', adb_serial: 'LEGACY-SERIAL', status: 'online',
@@ -113,6 +180,7 @@ describe('数据库迁移', () => {
     const result = runDatabaseMigrations(db, databasePath)
     expect(result.appliedMigrationIds).toEqual([
       '004-task-execution-endpoint-columns', '005-structured-execution-failure',
+      '006-network-connection-operations', '007-preserve-network-connection-snapshots',
       '008-task-videos', '009-video-run-results',
     ])
     expect(result.backupPath).toBeTruthy()
@@ -189,7 +257,10 @@ describe('数据库迁移', () => {
     `).run(timestamp)
 
     const result = runDatabaseMigrations(db, databasePath)
-    expect(result.appliedMigrationIds).toEqual(['008-task-videos', '009-video-run-results'])
+    expect(result.appliedMigrationIds).toEqual([
+      '006-network-connection-operations', '007-preserve-network-connection-snapshots',
+      '008-task-videos', '009-video-run-results',
+    ])
 
     const taskVideo = db.prepare('SELECT * FROM task_videos WHERE task_id = ?').get('task-1') as Record<string, unknown>
     expect(taskVideo).toMatchObject({ task_id: 'task-1', artifact_id: 'video-1', sequence: 0, display_name: 'legacy.mp4' })

@@ -9,6 +9,7 @@ import { AuditStore } from './database/stores/audit-store.js'
 import { DeviceRunStore } from './database/stores/device-run-store.js'
 import { DeviceStore, type UpsertAdbDeviceInput } from './database/stores/device-store.js'
 import { DeviceEndpointStore, type UpsertEndpointInput } from './database/stores/device-endpoint-store.js'
+import { NetworkConnectionOperationStore } from './database/stores/network-connection-operation-store.js'
 import { TaskStore } from './database/stores/task-store.js'
 import { VideoExecutionStore } from './database/stores/video-execution-store.js'
 import type { ArtifactRecord, CheckResult, MediaIntegrityResult } from './types.js'
@@ -35,6 +36,7 @@ export class PlatformDatabase {
   readonly audit: AuditStore
   readonly videoExecutions: VideoExecutionStore
   readonly tasks: TaskStore
+  readonly networkConnectionOperations: NetworkConnectionOperationStore
 
   constructor(options: PlatformDatabaseOptions = {}) {
     const resolvedDatabasePath = options.databasePath ?? databasePath
@@ -56,6 +58,8 @@ export class PlatformDatabase {
         maxTotalVideoBytes: config.maxTaskInputVideoBytes,
       },
     )
+    this.networkConnectionOperations = new NetworkConnectionOperationStore(this.db)
+    this.networkConnectionOperations.markInterrupted()
     this.deviceRuns.setTaskStateChangedHandler((taskId) => this.tasks.recompute(taskId))
 
     const seedSerial = Object.hasOwn(options, 'deviceSerial') ? options.deviceSerial : config.deviceSerial
@@ -81,6 +85,8 @@ export class PlatformDatabase {
   upsertDeviceEndpoint(input: UpsertEndpointInput) { return this.deviceEndpoints.upsert(input) }
   updateDeviceEndpointStatus(id: string, status: Parameters<DeviceEndpointStore['updateStatus']>[1], lastError?: string) { return this.deviceEndpoints.updateStatus(id, status, lastError) }
   removeDeviceEndpoint(id: string) { return this.deviceEndpoints.remove(id) }
+  hasActiveNetworkConnectionOperation() { return this.networkConnectionOperations.hasActive() }
+  getNetworkConnectionOperation(id: string) { return this.networkConnectionOperations.get(id) }
 
   createTask(input: Parameters<TaskStore['create']>[0]) { return this.tasks.create(input) }
   listTasks() { return this.tasks.list() }
