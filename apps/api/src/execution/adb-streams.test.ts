@@ -23,7 +23,7 @@ case "$*" in
       echo "SDK_COMPAT: very-long-log-line-$i-abcdefghijklmnopqrstuvwxyz"
       i=$((i + 1))
     done
-    sleep 30
+    exec sleep 30
     ;;
   *screencap*)
     printf 'partial-png'
