@@ -8,6 +8,7 @@ import type {
   TaskDeletionReceipt,
   VideoAsset,
   DeviceEndpoint,
+  NetworkConnectionOperation,
 } from '../types'
 import { DEVICES } from '../features/tasks/taskDefinitions'
 
@@ -89,6 +90,18 @@ export class MockTestPlatformClient implements TestPlatformClient {
   }
 
   async removeNetworkDevice(): Promise<void> {
+    throw new PlatformApiError('Mock 模式不连接真实 ADB', 'MOCK_NETWORK_UNAVAILABLE', 409)
+  }
+
+  async startNetworkConnectionOperation(): Promise<import('../types').NetworkConnectionOperationStart> {
+    throw new PlatformApiError('Mock 模式不连接真实 ADB，请使用真实后端模式管理联网设备', 'MOCK_NETWORK_UNAVAILABLE', 409)
+  }
+
+  async getNetworkConnectionOperation(): Promise<NetworkConnectionOperation> {
+    throw new PlatformApiError('Mock 模式不连接真实 ADB', 'MOCK_NETWORK_UNAVAILABLE', 409)
+  }
+
+  async cancelNetworkConnectionOperation(): Promise<NetworkConnectionOperation> {
     throw new PlatformApiError('Mock 模式不连接真实 ADB', 'MOCK_NETWORK_UNAVAILABLE', 409)
   }
 
