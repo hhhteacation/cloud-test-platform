@@ -24,7 +24,7 @@ import {
   message,
 } from 'antd'
 import type { TableProps } from 'antd'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { isRealPlatform, platformClient } from '../platform/client'
 import { createDeviceRefreshCoordinator, usePlatformDevices } from '../platform/usePlatformData'
@@ -33,6 +33,7 @@ import type {
   DeviceDiscoveryCandidate,
   DeviceEndpoint,
   DeviceProfile,
+  NetworkConnectionOperation,
 } from '../types'
 import { formatDate } from '../utils/format'
 
@@ -85,6 +86,23 @@ export function DevicesPage() {
   const [networkConnecting, setNetworkConnecting] = useState(false)
   const [networkOperation, setNetworkOperation] = useState<string>()
   const [refreshingDevices, setRefreshingDevices] = useState(false)
+  const [networkBatchOperation, setNetworkBatchOperation] = useState<NetworkConnectionOperation>()
+  const [networkBatchStarting, setNetworkBatchStarting] = useState(false)
+  const [networkBatchCancelling, setNetworkBatchCancelling] = useState(false)
+  const networkBatchPollTimer = useRef<number | undefined>(undefined)
+  const mountedRef = useRef(true)
+
+  useEffect(() => {
+    mountedRef.current = true
+
+    return () => {
+      mountedRef.current = false
+      if (networkBatchPollTimer.current !== undefined) {
+        window.clearTimeout(networkBatchPollTimer.current)
+        networkBatchPollTimer.current = undefined
+      }
+    }
+  }, [])
 
   const androidDevices = useMemo(
     () => devices.filter((device) => device.platform === 'android'),
@@ -181,6 +199,73 @@ export function DevicesPage() {
     }
   }
 
+  const networkBatchActive = networkBatchOperation?.status === 'queued' || networkBatchOperation?.status === 'running'
+
+  function clearNetworkBatchPollTimer() {
+    if (networkBatchPollTimer.current === undefined) return
+    window.clearTimeout(networkBatchPollTimer.current)
+    networkBatchPollTimer.current = undefined
+  }
+
+  function scheduleNetworkBatchPoll(operationId: string) {
+    clearNetworkBatchPollTimer()
+    if (!mountedRef.current) return
+    networkBatchPollTimer.current = window.setTimeout(() => {
+      networkBatchPollTimer.current = undefined
+      void pollNetworkBatchOperation(operationId)
+    }, 1000)
+  }
+
+  async function pollNetworkBatchOperation(operationId: string) {
+    try {
+      const operation = await platformClient.getNetworkConnectionOperation(operationId)
+      if (!mountedRef.current) return
+      setNetworkBatchOperation(operation)
+      if (operation.status === 'queued' || operation.status === 'running') {
+        scheduleNetworkBatchPoll(operationId)
+      } else {
+        clearNetworkBatchPollTimer()
+        await reload()
+        if (!mountedRef.current) return
+        const level = operation.status === 'completed' ? 'success' : operation.status === 'cancelled' ? 'warning' : 'error'
+        message[level](`批量连接完成：成功 ${operation.succeeded}，失败 ${operation.failed}，跳过 ${operation.skipped}，取消 ${operation.cancelled}`)
+      }
+    } catch (reason) {
+      if (!mountedRef.current) return
+      message.error(reason instanceof Error ? reason.message : '批量连接状态查询失败')
+      scheduleNetworkBatchPoll(operationId)
+    }
+  }
+
+  const startNetworkBatch = async () => {
+    if (networkBatchActive || networkBatchStarting || !isRealPlatform) return
+    setNetworkBatchStarting(true)
+    try {
+      const started = await platformClient.startNetworkConnectionOperation()
+      clearNetworkBatchPollTimer()
+      void pollNetworkBatchOperation(started.operationId)
+    } catch (reason) {
+      message.error(reason instanceof Error ? reason.message : '批量联网连接启动失败')
+    } finally {
+      setNetworkBatchStarting(false)
+    }
+  }
+
+  const cancelNetworkBatch = async () => {
+    if (!networkBatchOperation || !networkBatchActive || networkBatchCancelling) return
+    setNetworkBatchCancelling(true)
+    try {
+      const operation = await platformClient.cancelNetworkConnectionOperation(networkBatchOperation.id)
+      setNetworkBatchOperation(operation)
+      clearNetworkBatchPollTimer()
+      void pollNetworkBatchOperation(operation.id)
+    } catch (reason) {
+      message.error(reason instanceof Error ? reason.message : '批量联网连接取消失败')
+    } finally {
+      setNetworkBatchCancelling(false)
+    }
+  }
+
   const overviewColumns: TableProps<DeviceProfile>['columns'] = [
     {
       title: '物理设备',
@@ -248,6 +333,7 @@ export function DevicesPage() {
           size="small"
           icon={<ReloadOutlined />}
           loading={networkOperation === `overview:${device.id}`}
+          disabled={networkBatchActive}
           onClick={() => {
             const endpoint = device.endpoints?.network
             if (!endpoint) {
@@ -375,6 +461,7 @@ export function DevicesPage() {
               type={endpoint.status === 'online' ? 'default' : 'primary'}
               icon={<LinkOutlined />}
               loading={networkOperation === `${busyKey}:connect`}
+              disabled={networkBatchActive}
               onClick={() => void runNetworkOperation(
                 `${busyKey}:connect`,
                 () => platformClient.refreshNetworkDevice(device.id, endpoint.id),
@@ -386,7 +473,7 @@ export function DevicesPage() {
             <Button
               size="small"
               icon={<DisconnectOutlined />}
-              disabled={endpoint.status !== 'online'}
+              disabled={endpoint.status !== 'online' || networkBatchActive}
               loading={networkOperation === `${busyKey}:disconnect`}
               onClick={() => void runNetworkOperation(
                 `${busyKey}:disconnect`,
@@ -400,6 +487,7 @@ export function DevicesPage() {
               size="small"
               icon={<ReloadOutlined />}
               loading={networkOperation === `${busyKey}:refresh`}
+              disabled={networkBatchActive}
               onClick={() => void runNetworkOperation(
                 `${busyKey}:refresh`,
                 () => platformClient.refreshNetworkDevice(device.id, endpoint.id),
@@ -424,6 +512,7 @@ export function DevicesPage() {
                 danger
                 icon={<DeleteOutlined />}
                 loading={networkOperation === `${busyKey}:remove`}
+                disabled={networkBatchActive}
               >
                 移除
               </Button>
@@ -531,12 +620,12 @@ export function DevicesPage() {
                 <InputNumber min={1} max={65535} precision={0} style={{ width: 120 }} />
               </Form.Item>
               <Form.Item>
-                <Button type="primary" htmlType="submit" icon={<LinkOutlined />} loading={networkConnecting} disabled={!isRealPlatform}>
+                <Button type="primary" htmlType="submit" icon={<LinkOutlined />} loading={networkConnecting} disabled={!isRealPlatform || networkBatchActive}>
                   连接并绑定
                 </Button>
               </Form.Item>
               <Form.Item>
-                <Button icon={<SearchOutlined />} loading={networkDiscovering} disabled={!isRealPlatform} onClick={() => void scanNetworkDevices()}>
+                <Button icon={<SearchOutlined />} loading={networkDiscovering} disabled={!isRealPlatform || networkBatchActive} onClick={() => void scanNetworkDevices()}>
                   mDNS 发现
                 </Button>
               </Form.Item>
@@ -547,7 +636,23 @@ export function DevicesPage() {
               <Table rowKey={(candidate) => `${candidate.host}:${candidate.port}:${candidate.serial}`} columns={networkDiscoveryColumns} dataSource={networkCandidates} pagination={false} />
             </Card>
           ) : null}
-          <Card title="已配置联网 Endpoint" bordered={false}>
+          <Card
+            title="已配置联网 Endpoint"
+            bordered={false}
+            extra={networkBatchActive ? (
+              <Space>
+                <Typography.Text type="secondary">
+                  正在连接：{networkBatchOperation?.items.filter((item) => item.status !== 'pending' && item.status !== 'running').length} / {networkBatchOperation?.totalCount}
+                  {' '}成功：{networkBatchOperation?.succeeded} 失败：{networkBatchOperation?.failed} 跳过：{networkBatchOperation?.skipped} 取消：{networkBatchOperation?.cancelled}
+                </Typography.Text>
+                <Button danger size="small" loading={networkBatchCancelling} onClick={() => void cancelNetworkBatch()}>停止连接</Button>
+              </Space>
+            ) : (
+              <Button type="primary" size="small" icon={<LinkOutlined />} loading={networkBatchStarting} disabled={!isRealPlatform} onClick={() => void startNetworkBatch()}>
+                一键连接全部
+              </Button>
+            )}
+          >
             <Table rowKey="id" loading={loading} columns={networkEndpointColumns} dataSource={androidDevices} pagination={false} scroll={{ x: 1200 }} />
           </Card>
         </Space>
@@ -567,7 +672,7 @@ export function DevicesPage() {
             icon={<ReloadOutlined />}
             onClick={() => void refreshDevices()}
             loading={refreshingDevices}
-            disabled={refreshingDevices}
+            disabled={refreshingDevices || networkBatchActive}
           >
             刷新状态
           </Button>

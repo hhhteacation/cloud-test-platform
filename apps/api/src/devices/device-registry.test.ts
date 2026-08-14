@@ -15,10 +15,14 @@ class FakeAndroidProvider implements DeviceDiscoveryProvider {
   networkCandidates: DeviceDiscoveryCandidate[] = []
   connectResult?: DeviceDiscoveryCandidate
   disconnected: string[] = []
+  connectCalls: Array<{ host: string; port: number; signal?: AbortSignal }> = []
+  connectImpl?: (host: string, port: number, options?: { signal?: AbortSignal }) => Promise<DeviceDiscoveryCandidate>
 
   async discover() { return this.candidates }
   async discoverNetwork() { return this.networkCandidates }
-  async connectNetwork(host: string, port: number) {
+  async connectNetwork(host: string, port: number, options?: { signal?: AbortSignal }) {
+    this.connectCalls.push({ host, port, signal: options?.signal })
+    if (this.connectImpl) return this.connectImpl(host, port, options)
     return this.connectResult ?? { serial: `${host}:${port}`, host, port, platform: 'android' as const, connectionStatus: 'offline' as const }
   }
   async disconnect(serial: string) { this.disconnected.push(serial) }
@@ -324,6 +328,161 @@ describe('DeviceRegistryService', () => {
       },
     })
     expect(database.getDevice(magicV3.id)).toEqual(before)
+  })
+
+  async function registerNetworkDevices(count: number) {
+    const devices = []
+    for (let index = 0; index < count; index += 1) {
+      const device = await register(`SERIAL-${index + 1}`)
+      database.upsertDeviceEndpoint({
+        deviceId: device.id,
+        kind: 'network',
+        adbSerial: `192.0.2.${index + 1}:5555`,
+        host: `192.0.2.${index + 1}`,
+        port: 5555,
+        status: 'offline',
+      })
+      devices.push(device)
+    }
+    return devices
+  }
+
+  async function waitForNetworkOperation(operationId: string) {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const operation = registry.getNetworkConnectionOperation(operationId)
+      if (operation.status !== 'queued' && operation.status !== 'running') return operation
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+    throw new Error(`批量联网操作未在测试时间内完成：${operationId}`)
+  }
+
+  it('批量连接最多并发 3 台，单台失败不阻塞其他设备，并保留 ADB Evidence', async () => {
+    const devices = await registerNetworkDevices(6)
+    let active = 0
+    let maxActive = 0
+    provider.connectImpl = async (host, port) => {
+      active += 1
+      maxActive = Math.max(maxActive, active)
+      await new Promise((resolve) => setTimeout(resolve, host.endsWith('.2') ? 5 : 1))
+      active -= 1
+      if (host.endsWith('.2')) {
+        return {
+          serial: `${host}:${port}`, host, port, platform: 'android', connectionStatus: 'offline',
+          failureCode: 'ADB_PORT_REFUSED', failureMessage: 'connection refused', adbExitCode: 1,
+          adbStdout: 'adb stdout diagnostic', adbStderr: 'connection refused', adbStdoutTruncated: false, adbStderrTruncated: true,
+        }
+      }
+      return { ...onlineDevice(`${host}:${port}`, `SERIAL-${Number(host.split('.').at(-1))}`), host, port }
+    }
+
+    const started = registry.startNetworkConnectionOperation()
+    const result = await waitForNetworkOperation(started.operationId)
+
+    expect(maxActive).toBe(3)
+    expect(provider.connectCalls).toHaveLength(6)
+    expect(result).toMatchObject({ status: 'completed', totalCount: 6, succeeded: 5, failed: 1, skipped: 0, cancelled: 0 })
+    expect(result.items.find((item) => item.deviceId === devices[1].id)).toMatchObject({
+      status: 'failed', failureCode: 'ADB_PORT_REFUSED', failureMessage: expect.stringContaining('connection refused'),
+      adbExitCode: 1, adbStdout: 'adb stdout diagnostic', adbStderr: 'connection refused', adbStderrTruncated: true,
+    })
+  })
+
+  it('取消正在确认的已在线 Endpoint 不会把原在线状态伪装成 offline', async () => {
+    const [device] = await registerNetworkDevices(1)
+    const endpointBefore = database.getDeviceEndpointByKind(device.id, 'network')!
+    await database.updateDeviceEndpointStatus(endpointBefore.id, 'online')
+
+    let release: (() => void) | undefined
+    provider.connectImpl = async (host, port) => {
+      await new Promise<void>((resolve) => { release = resolve })
+      return {
+        serial: `${host}:${port}`, host, port, platform: 'android', connectionStatus: 'offline',
+        failureCode: 'NETWORK_CONNECTION_CANCELLED', failureMessage: '命令执行已取消',
+        adbExitCode: -1, adbStdout: 'partial stdout', adbStderr: 'partial stderr',
+      }
+    }
+
+    const started = registry.startNetworkConnectionOperation()
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const current = registry.getNetworkConnectionOperation(started.operationId)
+      if (current.items.some((item) => item.status === 'running')) break
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+    registry.cancelNetworkConnectionOperation(started.operationId)
+    release?.()
+    const result = await waitForNetworkOperation(started.operationId)
+
+    expect(result).toMatchObject({ status: 'cancelled', cancelled: 1 })
+    expect(result.items[0]).toMatchObject({
+      status: 'cancelled', failureCode: 'NETWORK_CONNECTION_CANCELLED',
+      adbExitCode: -1, adbStdout: 'partial stdout', adbStderr: 'partial stderr',
+    })
+    expect(database.getDeviceEndpointByKind(device.id, 'network')).toMatchObject({
+      id: endpointBefore.id, status: 'online', lastError: undefined,
+    })
+  })
+
+  it('批量连接会跳过 queued/running 设备且不修改其 Endpoint 状态', async () => {
+    const [busy, idle] = await registerNetworkDevices(2)
+    const apk = database.insertArtifact({ kind: 'apk', originalName: 'test.apk', mimeType: 'application/vnd.android.package-archive', storagePath: '/tmp/test.apk', sizeBytes: 1, sha256: 'apk' })
+    const video = database.insertArtifact({ kind: 'video', originalName: 'test.mp4', mimeType: 'video/mp4', storagePath: '/tmp/test.mp4', sizeBytes: 1, sha256: 'video' })
+    const task = database.createTask({ name: 'busy', apkArtifactId: apk.id, videoArtifactId: video.id, deviceIds: [busy.id], timeoutSeconds: 30 })
+    const before = database.getDeviceEndpointByKind(busy.id, 'network')
+    provider.connectImpl = async (host, port) => ({ ...onlineDevice(`${host}:${port}`, 'SERIAL-2'), host, port })
+
+    const started = registry.startNetworkConnectionOperation()
+    const result = await waitForNetworkOperation(started.operationId)
+
+    expect(database.getDeviceQueueStatus(busy.id)).toBe('queued')
+    expect(database.getDeviceEndpointByKind(busy.id, 'network')).toEqual(before)
+    expect(result.items.find((item) => item.deviceId === busy.id)).toMatchObject({ status: 'skipped', skipReason: 'DEVICE_BUSY', failureCode: 'DEVICE_BUSY' })
+    expect(result.items.find((item) => item.deviceId === idle.id)).toMatchObject({ status: 'succeeded' })
+    expect(provider.connectCalls.map((call) => call.host)).toEqual(['192.0.2.2'])
+    expect(task.status).toBe('queued')
+  })
+
+  it('取消批量连接后不再启动 pending 项，当前项标记 cancelled 且已完成项不回滚', async () => {
+    await registerNetworkDevices(5)
+    let releaseCurrent: (() => void) | undefined
+    let currentStarted: Promise<void> | undefined
+    provider.connectImpl = async (host, port, options) => {
+      if (host.endsWith('.1')) {
+        currentStarted = new Promise<void>((resolve) => { releaseCurrent = resolve })
+        await currentStarted
+        if (options?.signal?.aborted) throw new Error('cancelled')
+      }
+      return { ...onlineDevice(`${host}:${port}`, `SERIAL-${Number(host.split('.').at(-1))}`), host, port }
+    }
+
+    const started = registry.startNetworkConnectionOperation()
+    for (let attempt = 0; attempt < 20 && !currentStarted; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(currentStarted).toBeDefined()
+    const beforeCancel = registry.getNetworkConnectionOperation(started.operationId)
+    expect(beforeCancel.items.filter((item) => item.status === 'running')).toHaveLength(3)
+
+    registry.cancelNetworkConnectionOperation(started.operationId)
+    releaseCurrent?.()
+    const result = await waitForNetworkOperation(started.operationId)
+
+    expect(result.status).toBe('cancelled')
+    expect(result.items.filter((item) => item.status === 'succeeded')).toHaveLength(2)
+    expect(result.items.filter((item) => item.status === 'cancelled')).toHaveLength(3)
+    expect(provider.connectCalls).toHaveLength(3)
+    expect(result.items.filter((item) => item.status === 'cancelled').every((item) => item.failureCode === 'NETWORK_CONNECTION_CANCELLED')).toBe(true)
+  })
+
+  it('批量操作拒绝重复启动，服务重启状态由 Store 保持为可解释的 cancelled', async () => {
+    await registerNetworkDevices(1)
+    provider.connectImpl = async () => await new Promise<DeviceDiscoveryCandidate>(() => undefined)
+    const started = registry.startNetworkConnectionOperation()
+    expect(() => registry.startNetworkConnectionOperation()).toThrowError(
+      expect.objectContaining({ code: 'NETWORK_CONNECT_OPERATION_ALREADY_RUNNING', statusCode: 409 }),
+    )
+    expect(registry.getNetworkConnectionOperation(started.operationId)).toMatchObject({ status: 'running' })
+    database.networkConnectionOperations.markInterrupted()
+    expect(registry.getNetworkConnectionOperation(started.operationId)).toMatchObject({
+      status: 'cancelled', cancelReason: 'SERVICE_RESTARTED', items: [{ status: 'cancelled', cancelReason: 'SERVICE_RESTARTED' }],
+    })
   })
 
   it('断开和移除联网 Endpoint 不影响 USB Endpoint 或物理设备', async () => {
