@@ -52,7 +52,7 @@ describe('runProcess', () => {
     let caught: unknown
     try {
       await runProcess(process.execPath, ['-e', "process.stdout.write('started\\n'); setInterval(() => {}, 1000)"], {
-        timeoutMs: 50,
+        timeoutMs: 1_000,
         killGraceMs: 10,
         captureStdoutPath: stdoutPath,
       })
