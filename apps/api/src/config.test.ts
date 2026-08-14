@@ -39,6 +39,17 @@ describe('AppConfig', () => {
   })
 
 
+  it('提供多视频任务数量与总输入容量配置', () => {
+    const defaults = loadConfig({ HOME: '/tmp/home' })
+    expect(defaults.maxTaskVideos).toBe(10)
+    expect(defaults.maxTaskInputVideoBytes).toBe(10 * 1024 * 1024 * 1024)
+    const overridden = loadConfig({
+      HOME: '/tmp/home', MAX_TASK_VIDEOS: '6', MAX_TASK_INPUT_VIDEO_BYTES: '123456',
+    })
+    expect(overridden.maxTaskVideos).toBe(6)
+    expect(overridden.maxTaskInputVideoBytes).toBe(123456)
+  })
+
   it('为全量 Logcat 提供独立容量配置', () => {
     expect(loadConfig({ HOME: '/tmp/home' }).maxLogcatBytes).toBe(256 * 1024 * 1024)
     expect(loadConfig({ HOME: '/tmp/home', MAX_LOGCAT_BYTES: '8192' }).maxLogcatBytes).toBe(8192)

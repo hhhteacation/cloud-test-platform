@@ -25,9 +25,14 @@ describe('数据库迁移', () => {
     const { db, databasePath } = await databaseFixture()
     const first = runDatabaseMigrations(db, databasePath)
     const second = runDatabaseMigrations(db, databasePath)
-    expect(first.appliedMigrationIds).toEqual(['001-initial-schema', '002-compatibility-columns', '003-device-endpoints', '004-task-execution-endpoint-columns', '005-structured-execution-failure', '006-network-connection-operations', '007-preserve-network-connection-snapshots'])
+    expect(first.appliedMigrationIds).toEqual([
+      '001-initial-schema', '002-compatibility-columns', '003-device-endpoints',
+      '004-task-execution-endpoint-columns', '005-structured-execution-failure',
+      '006-network-connection-operations', '007-preserve-network-connection-snapshots',
+      '008-task-videos', '009-video-run-results',
+    ])
     expect(second.appliedMigrationIds).toEqual([])
-    expect(db.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get()).toMatchObject({ count: 7 })
+    expect(db.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get()).toMatchObject({ count: 9 })
     db.close()
   })
 
@@ -117,7 +122,11 @@ describe('数据库迁移', () => {
     `).run('legacy-device', 'LEGACY-SERIAL', timestamp, timestamp)
 
     const result = runDatabaseMigrations(db, databasePath)
-    expect(result.appliedMigrationIds).toEqual(['003-device-endpoints', '004-task-execution-endpoint-columns', '005-structured-execution-failure', '006-network-connection-operations', '007-preserve-network-connection-snapshots'])
+    expect(result.appliedMigrationIds).toEqual([
+      '003-device-endpoints', '004-task-execution-endpoint-columns',
+      '005-structured-execution-failure', '006-network-connection-operations',
+      '007-preserve-network-connection-snapshots', '008-task-videos', '009-video-run-results',
+    ])
     expect(db.prepare('SELECT device_id, kind, adb_serial, status FROM device_endpoints').get()).toMatchObject({
       device_id: 'legacy-device', kind: 'usb', adb_serial: 'LEGACY-SERIAL', status: 'online',
     })
@@ -169,7 +178,11 @@ describe('数据库迁移', () => {
     expect(runColumnsBefore).not.toEqual(expect.arrayContaining(['endpoint_id', 'connection_kind', 'adb_serial']))
 
     const result = runDatabaseMigrations(db, databasePath)
-    expect(result.appliedMigrationIds).toEqual(['004-task-execution-endpoint-columns', '005-structured-execution-failure', '006-network-connection-operations', '007-preserve-network-connection-snapshots'])
+    expect(result.appliedMigrationIds).toEqual([
+      '004-task-execution-endpoint-columns', '005-structured-execution-failure',
+      '006-network-connection-operations', '007-preserve-network-connection-snapshots',
+      '008-task-videos', '009-video-run-results',
+    ])
     expect(result.backupPath).toBeTruthy()
     expect(existsSync(result.backupPath!)).toBe(true)
 
@@ -203,6 +216,65 @@ describe('数据库迁移', () => {
     })
 
     expect(runDatabaseMigrations(db, databasePath).appliedMigrationIds).toEqual([])
+    db.close()
+  })
+
+  it('把历史单视频任务回填为 TaskVideo、VideoRunResult，并把输出与检查项关联到视频结果', async () => {
+    const { db, databasePath } = await databaseFixture()
+    runDatabaseMigrations(db, databasePath, DATABASE_MIGRATIONS.slice(0, 5))
+    const timestamp = '2026-08-14T00:00:00.000Z'
+    db.prepare(`
+      INSERT INTO artifacts
+        (id, kind, original_name, mime_type, storage_path, size_bytes, sha256, created_at)
+      VALUES
+        ('apk-1', 'apk', 'test.apk', 'application/vnd.android.package-archive', '/tmp/test.apk', 10, 'apk-sha', ?),
+        ('video-1', 'video', 'legacy.mp4', 'video/mp4', '/tmp/legacy.mp4', 20, 'video-sha', ?)
+    `).run(timestamp, timestamp)
+    db.prepare(`
+      INSERT INTO devices
+        (id, name, manufacturer, os_version, api_level, architecture, execution_mode, eligible)
+      VALUES ('device-1', '测试设备', 'Example', 'Android 14', 34, 'arm64-v8a', 'adb', 1)
+    `).run()
+    db.prepare(`
+      INSERT INTO tasks
+        (id, name, apk_artifact_id, video_artifact_id, status, progress, timeout_seconds, connection_mode, created_at, updated_at)
+      VALUES ('task-1', '历史任务', 'apk-1', 'video-1', 'passed', 100, 300, 'auto', ?, ?)
+    `).run(timestamp, timestamp)
+    db.prepare(`
+      INSERT INTO device_runs
+        (id, task_id, device_id, status, phase, progress, execution_status, media_integrity_status, started_at, finished_at)
+      VALUES ('run-1', 'task-1', 'device-1', 'passed', 'completed', 100, 'passed', 'passed', ?, ?)
+    `).run(timestamp, timestamp)
+    db.prepare(`
+      INSERT INTO check_results
+        (id, device_run_id, check_key, name, status, message, updated_at)
+      VALUES ('check-1', 'run-1', 'output_generated', '生成输出', 'passed', 'ok', ?)
+    `).run(timestamp)
+    db.prepare(`
+      INSERT INTO task_outputs
+        (id, task_id, device_run_id, kind, name, mime_type, storage_path, size_bytes, sha256, created_at)
+      VALUES ('output-1', 'task-1', 'run-1', 'processed_video', 'output.mp4', 'video/mp4', '/tmp/output.mp4', 30, 'output-sha', ?)
+    `).run(timestamp)
+
+    const result = runDatabaseMigrations(db, databasePath)
+    expect(result.appliedMigrationIds).toEqual([
+      '006-network-connection-operations', '007-preserve-network-connection-snapshots',
+      '008-task-videos', '009-video-run-results',
+    ])
+
+    const taskVideo = db.prepare('SELECT * FROM task_videos WHERE task_id = ?').get('task-1') as Record<string, unknown>
+    expect(taskVideo).toMatchObject({ task_id: 'task-1', artifact_id: 'video-1', sequence: 0, display_name: 'legacy.mp4' })
+    const videoRun = db.prepare('SELECT * FROM video_run_results WHERE device_run_id = ?').get('run-1') as Record<string, unknown>
+    expect(videoRun).toMatchObject({
+      task_id: 'task-1', task_video_id: taskVideo.id, device_run_id: 'run-1',
+      status: 'passed', phase: 'completed', progress: 100, media_integrity_status: 'passed',
+    })
+    expect(db.prepare('SELECT video_run_result_id FROM check_results WHERE id = ?').get('check-1'))
+      .toMatchObject({ video_run_result_id: videoRun.id })
+    expect(db.prepare('SELECT video_run_result_id FROM task_outputs WHERE id = ?').get('output-1'))
+      .toMatchObject({ video_run_result_id: videoRun.id })
+    expect(db.prepare('SELECT video_run_result_id, attempt_number, status FROM video_run_attempts').get())
+      .toMatchObject({ video_run_result_id: videoRun.id, attempt_number: 1, status: 'passed' })
     db.close()
   })
 

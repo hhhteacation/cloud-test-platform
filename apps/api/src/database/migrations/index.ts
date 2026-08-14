@@ -13,6 +13,8 @@ import {
   preserveNetworkConnectionSnapshots,
   preserveNetworkConnectionSnapshotsMigration,
 } from './007-preserve-network-connection-snapshots.js'
+import { taskVideosMigration } from './008-task-videos.js'
+import { migrateVideoRunResults, videoRunResultsDefinition } from './009-video-run-results.js'
 
 export interface DatabaseMigration {
   id: string
@@ -101,6 +103,16 @@ export const DATABASE_MIGRATIONS: DatabaseMigration[] = [
     id: '007-preserve-network-connection-snapshots',
     definition: preserveNetworkConnectionSnapshotsMigration,
     up: preserveNetworkConnectionSnapshots,
+  },
+  {
+    id: '008-task-videos',
+    definition: taskVideosMigration,
+    up: (db) => db.exec(taskVideosMigration),
+  },
+  {
+    id: '009-video-run-results',
+    definition: videoRunResultsDefinition,
+    up: migrateVideoRunResults,
   },
 ]
 
