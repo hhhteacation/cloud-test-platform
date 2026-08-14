@@ -115,6 +115,59 @@ export interface DeviceDiscoveryCandidate {
   kind?: DeviceConnectionKind
   host?: string
   port?: number
+  failureCode?: string
+  failureMessage?: string
+  adbExitCode?: number
+  adbStdout?: string
+  adbStderr?: string
+  adbStdoutTruncated?: boolean
+  adbStderrTruncated?: boolean
+}
+
+export type NetworkConnectionOperationStatus = 'queued' | 'running' | 'completed' | 'cancelled' | 'failed'
+export type NetworkConnectionOperationItemStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'skipped' | 'cancelled'
+
+export interface NetworkConnectionOperationItem {
+  id: string
+  operationId: string
+  deviceId: string
+  endpointId: string
+  host: string
+  port: number
+  status: NetworkConnectionOperationItemStatus
+  skipReason?: string
+  failureCode?: string
+  failureMessage?: string
+  adbExitCode?: number
+  adbStdout?: string
+  adbStderr?: string
+  adbStdoutTruncated?: boolean
+  adbStderrTruncated?: boolean
+  cancelReason?: string
+  startedAt?: string
+  finishedAt?: string
+}
+
+export interface NetworkConnectionOperation {
+  id: string
+  status: NetworkConnectionOperationStatus
+  totalCount: number
+  succeeded: number
+  failed: number
+  skipped: number
+  cancelled: number
+  cancelRequested: boolean
+  cancelReason?: string
+  createdAt: string
+  startedAt?: string
+  finishedAt?: string
+  items: NetworkConnectionOperationItem[]
+}
+
+export interface NetworkConnectionOperationStart {
+  operationId: string
+  status: NetworkConnectionOperationStatus
+  totalCount: number
 }
 
 export interface CheckResult {

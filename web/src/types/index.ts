@@ -32,6 +32,52 @@ export interface DeviceEndpoint {
   lastSeenAt?: string
   lastError?: string
 }
+
+export type NetworkConnectionOperationStatus = 'queued' | 'running' | 'completed' | 'cancelled' | 'failed'
+export type NetworkConnectionOperationItemStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'skipped' | 'cancelled'
+
+export interface NetworkConnectionOperationItem {
+  id: string
+  operationId: string
+  deviceId: string
+  endpointId: string
+  host: string
+  port: number
+  status: NetworkConnectionOperationItemStatus
+  skipReason?: string
+  failureCode?: string
+  failureMessage?: string
+  adbExitCode?: number
+  adbStdout?: string
+  adbStderr?: string
+  adbStdoutTruncated?: boolean
+  adbStderrTruncated?: boolean
+  cancelReason?: string
+  startedAt?: string
+  finishedAt?: string
+}
+
+export interface NetworkConnectionOperation {
+  id: string
+  status: NetworkConnectionOperationStatus
+  totalCount: number
+  succeeded: number
+  failed: number
+  skipped: number
+  cancelled: number
+  cancelRequested: boolean
+  cancelReason?: string
+  createdAt: string
+  startedAt?: string
+  finishedAt?: string
+  items: NetworkConnectionOperationItem[]
+}
+
+export interface NetworkConnectionOperationStart {
+  operationId: string
+  status: NetworkConnectionOperationStatus
+  totalCount: number
+}
 export type ExecutionStatus = 'pending' | 'running' | 'passed' | 'failed' | 'cancelled'
 export type MediaIntegrityStatus = 'not_checked' | 'passed' | 'failed' | 'blocked'
 
@@ -343,6 +389,9 @@ export interface TestPlatformClient {
   disconnectNetworkDevice(deviceId: string, endpointId: string): Promise<DeviceEndpoint>
   refreshNetworkDevice(deviceId: string, endpointId: string): Promise<DeviceEndpoint>
   removeNetworkDevice(deviceId: string, endpointId: string): Promise<void>
+  startNetworkConnectionOperation(): Promise<NetworkConnectionOperationStart>
+  getNetworkConnectionOperation(operationId: string): Promise<NetworkConnectionOperation>
+  cancelNetworkConnectionOperation(operationId: string): Promise<NetworkConnectionOperation>
   registerDevice(serial: string): Promise<DeviceProfile>
   uploadArtifact(file: File, kind: ArtifactKind): Promise<Artifact>
   createTask(input: CreateTaskInput): Promise<TestTask>
