@@ -6,6 +6,17 @@ export interface DeviceRunJob {
   deviceId: string
 }
 
+export interface VideoRunExecution {
+  videoRunResultId: string
+  taskVideoId: string
+  artifactId: string
+  sequence: number
+  displayName: string
+  videoPath: string
+  videoOriginalName: string
+  runStatus: RunStatus
+}
+
 export interface DeviceRunExecution extends DeviceRunJob {
   deviceSerial: string
   deviceName: string
@@ -14,6 +25,9 @@ export interface DeviceRunExecution extends DeviceRunJob {
   platform: DevicePlatform
   apkPath: string
   apkPackageName?: string
+  /** Ordered by TaskVideo.sequence. */
+  videos: VideoRunExecution[]
+  /** Compatibility aliases for legacy single-video callers. */
   videoPath: string
   videoOriginalName: string
   timeoutSeconds: number

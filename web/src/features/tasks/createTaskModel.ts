@@ -1,7 +1,9 @@
 import type { TestPlatformClient, DeviceProfile, Artifact, CreateTaskInput, TestTask, TaskConnectionMode } from '../../types'
+import { MAX_TASK_INPUT_VIDEO_BYTES, MAX_TASK_VIDEOS } from '../../utils/uploadValidation'
 
 export const TEST_NOTES = [
-  '真实模式可同时选择多台已录入、在线并授权的 Android USB 真机',
+  '一个任务最多包含 10 条有序 MP4；该顺序同时用于同设备执行和报告展示',
+  '视频最多并发上传 2 条；不同设备可并行执行，同一设备按视频顺序执行',
   '后端会根据 APK 包名选择对应的输入、启动、进度、输出和取消协议',
   '当前已识别 com.sdktest.platform 与 com.morphoinc.videopostprocessor',
 ] as const
@@ -12,9 +14,11 @@ export const TEST_PLAN: CreateTaskInput['testPlan'] = {
   timeoutSeconds: 900,
 }
 
+export const VIDEO_UPLOAD_CONCURRENCY = 2
+
 export interface CreateTaskFormState {
   apkFile?: File
-  videoFile?: File
+  videoFiles: readonly File[]
   deviceIds: string[]
   devices: DeviceProfile[]
   devicesLoading: boolean
@@ -26,7 +30,7 @@ export interface CreateTaskFormState {
 export interface CreateTaskSubmissionInput {
   name: string
   apkFile: File
-  videoFile: File
+  videoFiles: readonly File[]
   deviceIds: string[]
   connectionMode: TaskConnectionMode
 }
@@ -34,9 +38,8 @@ export interface CreateTaskSubmissionInput {
 export interface CreateTaskSubmissionHooks {
   onStep?: (step: number) => void
   onApkUploaded?: (artifact: Artifact) => void
-  onVideoUploaded?: (artifact: Artifact) => void
+  onVideoUploaded?: (artifact: Artifact, index: number) => void
 }
-
 
 export function isDeviceAvailableForMode(
   device: DeviceProfile,
@@ -79,7 +82,11 @@ export function getDefaultDeviceIds(
 
 export function validateCreateTaskForm(state: CreateTaskFormState): string | undefined {
   if (!state.apkFile) return '请先选择 APK 测试应用'
-  if (!state.videoFile) return '请先上传 MP4 视频素材'
+  if (!state.videoFiles.length) return '请至少上传一条 MP4 视频素材'
+  if (state.videoFiles.length > MAX_TASK_VIDEOS) return `单任务最多允许 ${MAX_TASK_VIDEOS} 条视频`
+  if (state.videoFiles.reduce((total, file) => total + file.size, 0) > MAX_TASK_INPUT_VIDEO_BYTES) {
+    return '单任务输入视频总量不能超过 10 GB'
+  }
   if (state.devicesLoading) return '设备列表仍在加载，请稍后再试'
   if (state.devicesError) return `设备列表加载失败：${state.devicesError}`
   if (!state.deviceIds.length) return '请至少选择一台 Android 设备'
@@ -108,15 +115,18 @@ export async function createTaskWithUploads(
   hooks.onApkUploaded?.(apk)
 
   hooks.onStep?.(1)
-  const video: Artifact = await client.uploadArtifact(input.videoFile, 'video')
-  hooks.onVideoUploaded?.(video)
+  const videos = await mapWithConcurrency(input.videoFiles, VIDEO_UPLOAD_CONCURRENCY, async (file, index) => {
+    const artifact = await client.uploadArtifact(file, 'video')
+    hooks.onVideoUploaded?.(artifact, index)
+    return artifact
+  })
 
   hooks.onStep?.(2)
   const task = await client.createTask({
     platform: 'android',
     name: input.name,
     apkArtifactId: apk.id,
-    videoArtifactId: video.id,
+    videoArtifactIds: videos.map((video) => video.id),
     deviceIds: input.deviceIds,
     connectionMode: input.connectionMode,
     testPlan: TEST_PLAN,
@@ -124,4 +134,22 @@ export async function createTaskWithUploads(
 
   hooks.onStep?.(3)
   return task
+}
+
+export async function mapWithConcurrency<T, R>(
+  values: readonly T[],
+  concurrency: number,
+  worker: (value: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  if (!Number.isSafeInteger(concurrency) || concurrency < 1) throw new Error('并发数必须是正整数')
+  const results = new Array<R>(values.length)
+  let nextIndex = 0
+  const run = async () => {
+    while (nextIndex < values.length) {
+      const index = nextIndex++
+      results[index] = await worker(values[index], index)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, values.length) }, run))
+  return results
 }

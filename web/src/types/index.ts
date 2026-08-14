@@ -257,6 +257,7 @@ export interface TestOutput {
   id: string
   taskId: string
   deviceRunId: string
+  videoRunResultId?: string
   kind: 'processed_video'
   name: string
   mimeType: 'video/mp4'
@@ -264,6 +265,45 @@ export interface TestOutput {
   sha256: string
   previewUrl: string
   downloadUrl: string
+}
+
+
+export interface VideoRunAttempt {
+  id: string
+  videoRunResultId: string
+  attemptNumber: number
+  status: DeviceRunStatus
+  failureCode?: string
+  failureMessage?: string
+  startedAt?: string
+  finishedAt?: string
+  createdAt: string
+}
+
+export interface VideoRunResult {
+  id: string
+  taskId: string
+  taskVideoId: string
+  deviceRunId: string
+  deviceId: string
+  status: DeviceRunStatus
+  phase?: DeviceRunPhase
+  progress: number
+  checks: CheckResult[]
+  logs: string[]
+  outputs: TestOutput[]
+  primaryOutput?: TestOutput
+  attempts: VideoRunAttempt[]
+  startedAt?: string
+  finishedAt?: string
+  failureCode?: string
+  failureMessage?: string
+  failure?: ExecutionFailure
+  executionStatus?: ExecutionStatus
+  executionFailureCode?: string
+  mediaIntegrityStatus: MediaIntegrityStatus
+  mediaIntegrityFailureCode?: string
+  mediaMetadata?: MediaMetadata
 }
 
 export interface DeviceRunResult {
@@ -324,6 +364,14 @@ export interface TestTask {
   /** 兼容旧的浏览器 Mock 任务，因此 APK 允许为空。 */
   apk?: Artifact
   asset: Artifact
+  videos?: Array<{
+    id: string
+    taskId: string
+    artifactId: string
+    sequence: number
+    displayName: string
+    asset: Artifact
+  }>
   deviceIds: string[]
   connectionMode?: TaskConnectionMode
   status: TestTaskStatus
@@ -331,6 +379,7 @@ export interface TestTask {
   passRate?: number
   createdAt: string
   runs: Record<string, DeviceRunResult>
+  videoRuns?: Record<string, Record<string, VideoRunResult>>
   capabilities: TaskCapabilities
 }
 
@@ -345,7 +394,10 @@ export interface CreateTaskInput {
   name: string
   platform: 'android'
   apkArtifactId: string
-  videoArtifactId: string
+  /** Legacy single-video field accepted by older clients. */
+  videoArtifactId?: string
+  /** Ordered video IDs used by new multi-video tasks. */
+  videoArtifactIds?: string[]
   deviceIds: string[]
   connectionMode?: TaskConnectionMode
   testPlan: {
@@ -359,6 +411,7 @@ export interface MockCreateTaskInput {
   name: string
   apk: ApkAsset
   asset: VideoAsset
+  assets?: VideoAsset[]
   deviceIds: string[]
   connectionMode: TaskConnectionMode
   executions: Array<{

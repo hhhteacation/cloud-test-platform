@@ -249,6 +249,7 @@ export class TaskStore {
       WHERE id = ? AND status IN ('queued', 'running')
     `).run(timestamp, taskId)
     this.runs.cancelForTask(taskId, timestamp)
+    this.videoExecutions.cancelForTask(taskId, timestamp)
   }
 
   recompute(taskId: string) {
