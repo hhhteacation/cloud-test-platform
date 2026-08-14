@@ -47,7 +47,26 @@ export async function buildServer(options: BuildServerOptions = {}) {
   )
   const deviceRegistry = new DeviceRegistryService(database, [androidDeviceProvider])
   const mediaIntegrityChecker = new MediaIntegrityChecker({ runner: processRunner, config })
-  const adbWorker = new AdbWorker(database, mediaIntegrityChecker, config, processRunner)
+  const adbWorker = new AdbWorker(
+    database,
+    mediaIntegrityChecker,
+    config,
+    processRunner,
+    async (job) => {
+      const task = database.getTask(job.taskId)
+      if (!task || task.status === 'cancelled') return undefined
+      const endpoint = await deviceRegistry.resolveExecutionEndpoint(
+        job.deviceId,
+        task.connectionMode ?? 'auto',
+      )
+      const assigned = database.assignDeviceRunEndpoint(job, {
+        endpointId: endpoint.id,
+        connectionKind: endpoint.kind,
+        adbSerial: endpoint.adbSerial,
+      })
+      return assigned ? database.getDeviceRunExecution(job.taskId, job.runId) : undefined
+    },
+  )
   const endpointResolvingWorker = new EndpointResolvingWorker(database, deviceRegistry, adbWorker)
   const queue = new DeviceQueueManager(database, endpointResolvingWorker)
   const artifactService = new ArtifactService(database, { config, processRunner })

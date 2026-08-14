@@ -20,7 +20,7 @@ import { useNavigate } from 'react-router-dom'
 import { DeviceMatrixSelector } from '../components/task/DeviceMatrixSelector'
 import { ApkSelector } from '../components/task/ApkSelector'
 import { SubmitProgress } from '../components/task/SubmitProgress'
-import { VideoSelector } from '../components/task/VideoSelector'
+import { VideoSelector, type SelectedVideo } from '../components/task/VideoSelector'
 import { isRealPlatform, platformClient } from '../platform/client'
 import { PlatformApiError } from '../platform/errors'
 import type { Artifact, TaskConnectionMode } from '../types'
@@ -32,7 +32,7 @@ import {
   getSelectableDevices,
   validateCreateTaskForm,
 } from '../features/tasks/createTaskModel'
-import { validateUploadFile } from '../utils/uploadValidation'
+import { MAX_TASK_INPUT_VIDEO_BYTES, MAX_TASK_VIDEOS, validateUploadFile } from '../utils/uploadValidation'
 
 export function CreateTaskPage() {
   const navigate = useNavigate()
@@ -40,8 +40,8 @@ export function CreateTaskPage() {
   const [form] = Form.useForm<{ name: string }>()
   const [apkFile, setApkFile] = useState<File>()
   const [uploadedApk, setUploadedApk] = useState<Artifact>()
-  const [videoFile, setVideoFile] = useState<File>()
-  const [previewUrl, setPreviewUrl] = useState<string>()
+  const [selectedVideos, setSelectedVideos] = useState<SelectedVideo[]>([])
+  const selectedVideosRef = useRef<SelectedVideo[]>([])
   const [deviceIds, setDeviceIds] = useState<string[]>([])
   const [connectionMode, setConnectionMode] = useState<TaskConnectionMode>('auto')
   const [submitting, setSubmitting] = useState(false)
@@ -56,30 +56,73 @@ export function CreateTaskPage() {
     setDeviceIds(getDefaultDeviceIds(devices, platformClient.mode))
   }, [devices])
 
+  useEffect(() => {
+    selectedVideosRef.current = selectedVideos
+  }, [selectedVideos])
+
   useEffect(() => () => {
-    if (previewUrl) URL.revokeObjectURL(previewUrl)
-  }, [previewUrl])
+    for (const video of selectedVideosRef.current) URL.revokeObjectURL(video.previewUrl)
+  }, [])
 
   const selectableDevices = getSelectableDevices(devices, platformClient.mode)
 
-  const selectFile = (file: File, kind: 'apk' | 'video') => {
-    const error = validateUploadFile(file, kind)
+  const selectApk = (file: File) => {
+    const error = validateUploadFile(file, 'apk')
     if (error) {
       message.error(error)
       return Upload.LIST_IGNORE
     }
-
     setSubmitError(undefined)
-    if (kind === 'apk') {
-      setApkValidationError(undefined)
-      setUploadedApk(undefined)
-      setApkFile(file)
-    } else {
-      if (previewUrl) URL.revokeObjectURL(previewUrl)
-      setVideoFile(file)
-      setPreviewUrl(URL.createObjectURL(file))
-    }
+    setApkValidationError(undefined)
+    setUploadedApk(undefined)
+    setApkFile(file)
     return false
+  }
+
+  const selectVideo = (file: File) => {
+    const error = validateUploadFile(file, 'video')
+    if (error) {
+      message.error(error)
+      return Upload.LIST_IGNORE
+    }
+    setSubmitError(undefined)
+    setSelectedVideos((current) => {
+      if (current.length >= MAX_TASK_VIDEOS) {
+        message.error(`单任务最多允许 ${MAX_TASK_VIDEOS} 条视频`)
+        return current
+      }
+      const key = videoKey(file)
+      if (current.some((item) => item.key === key)) {
+        message.error(`视频 ${file.name} 已经在任务列表中`)
+        return current
+      }
+      const totalBytes = current.reduce((total, item) => total + item.file.size, 0) + file.size
+      if (totalBytes > MAX_TASK_INPUT_VIDEO_BYTES) {
+        message.error('单任务输入视频总量不能超过 10 GB')
+        return current
+      }
+      return [...current, { key, file, previewUrl: URL.createObjectURL(file) }]
+    })
+    return false
+  }
+
+  const removeVideo = (index: number) => {
+    setSelectedVideos((current) => {
+      const removed = current[index]
+      if (!removed) return current
+      URL.revokeObjectURL(removed.previewUrl)
+      return current.filter((_, candidateIndex) => candidateIndex !== index)
+    })
+  }
+
+  const moveVideo = (index: number, direction: -1 | 1) => {
+    setSelectedVideos((current) => {
+      const target = index + direction
+      if (target < 0 || target >= current.length) return current
+      const next = [...current]
+      ;[next[index], next[target]] = [next[target], next[index]]
+      return next
+    })
   }
 
   const handleSubmit = async ({ name }: { name: string }) => {
@@ -88,7 +131,7 @@ export function CreateTaskPage() {
 
     const validationError = validateCreateTaskForm({
       apkFile,
-      videoFile,
+      videoFiles: selectedVideos.map((video) => video.file),
       deviceIds,
       devices,
       devicesLoading,
@@ -98,16 +141,16 @@ export function CreateTaskPage() {
     })
     if (validationError) return showSubmitError(validationError, setSubmitError)
 
-    // validateCreateTaskForm 已确保这两个文件存在；局部变量让 TypeScript 和维护者都能看到这个不变量。
+    // validateCreateTaskForm 已确保 APK 和至少一个视频存在。
     const selectedApk = apkFile
-    const selectedVideo = videoFile
-    if (!selectedApk || !selectedVideo) return
+    const videoFiles = selectedVideos.map((video) => video.file)
+    if (!selectedApk || !videoFiles.length) return
 
     setSubmitting(true)
     try {
       const task = await createTaskWithUploads(
         platformClient,
-        { name, apkFile: selectedApk, videoFile: selectedVideo, deviceIds, connectionMode },
+        { name, apkFile: selectedApk, videoFiles, deviceIds, connectionMode },
         { onStep: setSubmitStep, onApkUploaded: setUploadedApk },
       )
       message.success(isRealPlatform ? '真实 ADB 测试任务已创建' : 'Mock 测试任务已创建')
@@ -178,7 +221,7 @@ export function CreateTaskPage() {
                   file={apkFile}
                   artifact={uploadedApk}
                   disabled={submitting}
-                  onSelect={(file) => selectFile(file, 'apk')}
+                  onSelect={selectApk}
                   onRemove={() => {
                     setApkFile(undefined)
                     setUploadedApk(undefined)
@@ -197,15 +240,11 @@ export function CreateTaskPage() {
               </Form.Item>
               <Form.Item label="输入视频（MP4）" required>
                 <VideoSelector
-                  file={videoFile}
-                  previewUrl={previewUrl}
+                  videos={selectedVideos}
                   disabled={submitting}
-                  onSelect={(file) => selectFile(file, 'video')}
-                  onRemove={() => {
-                    if (previewUrl) URL.revokeObjectURL(previewUrl)
-                    setPreviewUrl(undefined)
-                    setVideoFile(undefined)
-                  }}
+                  onSelect={selectVideo}
+                  onRemove={removeVideo}
+                  onMove={moveVideo}
                 />
               </Form.Item>
             </Card>
@@ -235,7 +274,7 @@ export function CreateTaskPage() {
               disabled={submitting}
               realMode={isRealPlatform}
               onChange={setDeviceIds}
-              note="同一 APK 和 MP4 会发送到所有选中设备；不同设备可并行执行，同一设备内任务按顺序执行。"
+              note="同一 APK 和有序视频列表会发送到所有选中设备；不同设备可并行执行，同一设备按列表顺序逐条执行。"
             />
             <Card title="测试说明" className="form-card">
               <List
@@ -277,7 +316,7 @@ function PageHeading({ realMode }: { realMode: boolean }) {
       <div>
         <Typography.Title level={2}>创建测试任务</Typography.Title>
         <Typography.Text type="secondary">
-          上传已配置执行协议的 APK 和输入 MP4，启动多台 Android 真机的视频处理兼容性测试。
+          上传已配置执行协议的 APK 和多条有序 MP4，启动多台 Android 真机的视频处理兼容性测试。
         </Typography.Text>
       </div>
       <Tag color={realMode ? 'green' : 'blue'}>{realMode ? 'ADB 真机模式' : 'MVP · Mock 模式'}</Tag>
@@ -285,6 +324,10 @@ function PageHeading({ realMode }: { realMode: boolean }) {
   )
 }
 
+
+function videoKey(file: File) {
+  return `${file.name}:${file.size}:${file.lastModified}`
+}
 
 function showSubmitError(errorMessage: string, setError: (message: string) => void) {
   setError(errorMessage)

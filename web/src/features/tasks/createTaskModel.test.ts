@@ -6,6 +6,7 @@ import {
   getDefaultDeviceIds,
   getSelectableDevices,
   isDeviceAvailableForMode,
+  mapWithConcurrency,
   validateCreateTaskForm,
 } from './createTaskModel'
 
@@ -67,25 +68,29 @@ describe('createTaskModel', () => {
     expect(getDefaultDeviceIds(devices, 'mock')).toEqual(['honor-magic-v3', 'pixel-8'])
   })
 
-  it('校验必填项，并阻止已选设备与连接模式冲突', () => {
+  it('校验多视频必填项，并阻止已选设备与连接模式冲突', () => {
     const base = { devices, devicesLoading: false, platformMode: 'real' as const, connectionMode: 'usb' as const }
-    expect(validateCreateTaskForm({ ...base, apkFile: undefined, videoFile: file('a.mp4', 'video/mp4'), deviceIds: ['pixel-8'] })).toBe('请先选择 APK 测试应用')
-    expect(validateCreateTaskForm({ ...base, apkFile: file('a.apk', 'application/vnd.android.package-archive'), videoFile: undefined, deviceIds: ['pixel-8'] })).toBe('请先上传 MP4 视频素材')
-    expect(validateCreateTaskForm({ ...base, apkFile: file('a.apk', 'application/vnd.android.package-archive'), videoFile: file('a.mp4', 'video/mp4'), deviceIds: ['honor-magic-v3'] })).toContain('当前没有可用的USB连接')
-    expect(validateCreateTaskForm({ ...base, apkFile: file('a.apk', 'application/vnd.android.package-archive'), videoFile: file('a.mp4', 'video/mp4'), deviceIds: ['pixel-8'] })).toBeUndefined()
+    expect(validateCreateTaskForm({ ...base, apkFile: undefined, videoFiles: [file('a.mp4', 'video/mp4')], deviceIds: ['pixel-8'] })).toBe('请先选择 APK 测试应用')
+    expect(validateCreateTaskForm({ ...base, apkFile: file('a.apk', 'application/vnd.android.package-archive'), videoFiles: [], deviceIds: ['pixel-8'] })).toBe('请至少上传一条 MP4 视频素材')
+    expect(validateCreateTaskForm({ ...base, apkFile: file('a.apk', 'application/vnd.android.package-archive'), videoFiles: [file('a.mp4', 'video/mp4')], deviceIds: ['honor-magic-v3'] })).toContain('当前没有可用的USB连接')
+    expect(validateCreateTaskForm({ ...base, apkFile: file('a.apk', 'application/vnd.android.package-archive'), videoFiles: [file('a.mp4', 'video/mp4')], deviceIds: ['pixel-8'] })).toBeUndefined()
   })
 
-  it('上传 APK、MP4 后创建带 connectionMode 的任务', async () => {
+  it('上传 APK 和有序多视频后用 videoArtifactIds 创建任务', async () => {
     const steps: number[] = []
+    const uploadedVideoNames: string[] = []
     const client: TestPlatformClient = {
       mode: 'real',
       listDevices: vi.fn(), refreshDevices: vi.fn(), discoverDevices: vi.fn(), discoverNetworkDevices: vi.fn(), registerDevice: vi.fn(),
       connectNetworkDevice: vi.fn(), disconnectNetworkDevice: vi.fn(), refreshNetworkDevice: vi.fn(), removeNetworkDevice: vi.fn(),
       startNetworkConnectionOperation: vi.fn(), getNetworkConnectionOperation: vi.fn(), cancelNetworkConnectionOperation: vi.fn(),
-      uploadArtifact: vi.fn(async (_file, kind) => artifact(kind, `${kind}-1`)),
+      uploadArtifact: vi.fn(async (uploadedFile, kind) => {
+        if (kind === 'video') uploadedVideoNames.push(uploadedFile.name)
+        return artifact(kind, kind === 'apk' ? 'apk-1' : uploadedFile.name.replace('.mp4', ''))
+      }),
       createTask: vi.fn(async (input) => ({
         id: 'task-1', platform: 'android' as const, name: input.name,
-        apk: artifact('apk', input.apkArtifactId), asset: artifact('video', input.videoArtifactId),
+        apk: artifact('apk', input.apkArtifactId), asset: artifact('video', input.videoArtifactIds![0]),
         deviceIds: input.deviceIds, connectionMode: input.connectionMode,
         status: 'queued' as const, progress: 0, createdAt: new Date().toISOString(), runs: {},
         capabilities: { canCancel: true, canDelete: false, deleteBlockedReason: '任务正在排队，请先取消任务' },
@@ -95,15 +100,30 @@ describe('createTaskModel', () => {
 
     const task = await createTaskWithUploads(client, {
       name: 'test', apkFile: file('test.apk', 'application/vnd.android.package-archive'),
-      videoFile: file('test.mp4', 'video/mp4'), deviceIds: ['honor-magic-v3'], connectionMode: 'network',
+      videoFiles: [file('second.mp4', 'video/mp4'), file('first.mp4', 'video/mp4')],
+      deviceIds: ['honor-magic-v3'], connectionMode: 'network',
     }, { onStep: (step) => steps.push(step) })
 
     expect(steps).toEqual([0, 1, 2, 3])
-    expect(client.uploadArtifact).toHaveBeenNthCalledWith(1, expect.any(File), 'apk')
-    expect(client.uploadArtifact).toHaveBeenNthCalledWith(2, expect.any(File), 'video')
+    expect(client.uploadArtifact).toHaveBeenCalledTimes(3)
+    expect(uploadedVideoNames).toEqual(['second.mp4', 'first.mp4'])
     expect(client.createTask).toHaveBeenCalledWith(expect.objectContaining({
-      apkArtifactId: 'apk-1', videoArtifactId: 'video-1', connectionMode: 'network',
+      apkArtifactId: 'apk-1', videoArtifactIds: ['second', 'first'], connectionMode: 'network',
     }))
     expect(task.id).toBe('task-1')
+  })
+
+  it('上传 worker 最多并发 2 个，并按输入顺序返回结果', async () => {
+    let active = 0
+    let maxActive = 0
+    const results = await mapWithConcurrency([30, 5, 15, 1], 2, async (delay, index) => {
+      active += 1
+      maxActive = Math.max(maxActive, active)
+      await new Promise((resolve) => setTimeout(resolve, delay))
+      active -= 1
+      return `result-${index}`
+    })
+    expect(maxActive).toBe(2)
+    expect(results).toEqual(['result-0', 'result-1', 'result-2', 'result-3'])
   })
 })

@@ -5,6 +5,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 
 import { DeviceResultMatrix } from '../components/report/DeviceResultMatrix'
 import { DeviceRunDetailDrawer } from '../components/report/DeviceRunDetailDrawer'
+import { MultiVideoComparison } from '../components/report/MultiVideoComparison'
 import { DEVICES } from '../features/tasks/taskDefinitions'
 import { isRealPlatform, platformClient } from '../platform/client'
 import type { DeviceProfile, DeviceRunResult, TestReport } from '../types'
@@ -66,6 +67,7 @@ export function ReportPage() {
       <ReportSummary report={report} />
       <ReportStats report={report} runs={runs} />
       <ArtifactSummary report={report} />
+      <MultiVideoComparison report={report} devices={devices} />
       <DeviceResultMatrix runs={runs} devices={devices} onOpenDetails={setSelectedRun} />
       <DeviceRunDetailDrawer
         open={Boolean(selectedRun)}
@@ -106,15 +108,15 @@ function ReportSummary({ report }: { report: TestReport }) {
 }
 
 function ReportStats({ report, runs }: { report: TestReport; runs: DeviceRunResult[] }) {
-  const passed = runs.filter((run) => run.status === 'passed').length
-  const failed = runs.filter((run) => run.status === 'failed').length
-  const checks = runs.reduce((total, run) => total + run.checks.length, 0)
+  const videoResults = Object.values(report.videoRuns ?? {}).flatMap((byDevice) => Object.values(byDevice))
+  const passedVideoResults = videoResults.filter((result) => result.status === 'passed').length
+  const failedVideoResults = videoResults.filter((result) => result.status === 'failed').length
   return (
     <Row gutter={16} className="stats-row">
-      <Col span={6}><Card><Statistic title="总体通过率" value={report.passRate ?? 0} suffix="%" /></Card></Col>
-      <Col span={6}><Card><Statistic title="通过设备" value={passed} suffix="台" valueStyle={{ color: '#16a34a' }} /></Card></Col>
-      <Col span={6}><Card><Statistic title="失败设备" value={failed} suffix="台" valueStyle={{ color: failed ? '#dc2626' : undefined }} /></Card></Col>
-      <Col span={6}><Card><Statistic title="已记录检查项" value={checks} suffix="项" /></Card></Col>
+      <Col span={6}><Card><Statistic title="测试视频" value={report.videos?.length ?? 1} suffix="条" /></Card></Col>
+      <Col span={6}><Card><Statistic title="测试设备" value={runs.length} suffix="台" /></Card></Col>
+      <Col span={6}><Card><Statistic title="视频结果通过" value={passedVideoResults} suffix={`/ ${videoResults.length || runs.length}`} valueStyle={{ color: '#16a34a' }} /></Card></Col>
+      <Col span={6}><Card><Statistic title="视频结果失败" value={failedVideoResults} suffix="条" valueStyle={{ color: failedVideoResults ? '#dc2626' : undefined }} /></Card></Col>
     </Row>
   )
 }
@@ -127,9 +129,15 @@ function ArtifactSummary({ report }: { report: TestReport }) {
         <Descriptions.Item label="APK 大小">{report.apk ? formatBytes(report.apk.sizeBytes) : '-'}</Descriptions.Item>
         <Descriptions.Item label="APK 包名">{report.apk?.packageName ?? '等待后端校验'}</Descriptions.Item>
         <Descriptions.Item label="APK SHA-256"><Typography.Text code copyable>{report.apk?.sha256 ?? '-'}</Typography.Text></Descriptions.Item>
-        <Descriptions.Item label="输入 MP4">{report.asset.name}</Descriptions.Item>
-        <Descriptions.Item label="输入大小">{formatBytes(report.asset.sizeBytes)}</Descriptions.Item>
-        <Descriptions.Item label="输入 SHA-256" span={2}><Typography.Text code copyable>{report.asset.sha256 ?? '-'}</Typography.Text></Descriptions.Item>
+        <Descriptions.Item label="输入视频数量">{report.videos?.length ?? 1} 条</Descriptions.Item>
+        <Descriptions.Item label="输入总大小">{formatBytes((report.videos ?? [{ asset: report.asset }]).reduce((total, video) => total + video.asset.sizeBytes, 0))}</Descriptions.Item>
+        <Descriptions.Item label="输入视频" span={2}>
+          <Space direction="vertical" size={2}>
+            {(report.videos ?? [{ id: report.asset.id, sequence: 0, displayName: report.asset.name, asset: report.asset }]).map((video) => (
+              <Typography.Text key={video.id}>{video.sequence + 1}. {video.displayName}（{formatBytes(video.asset.sizeBytes)}）</Typography.Text>
+            ))}
+          </Space>
+        </Descriptions.Item>
       </Descriptions>
     </Card>
   )
