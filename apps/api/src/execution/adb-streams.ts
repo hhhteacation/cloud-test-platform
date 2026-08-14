@@ -3,6 +3,7 @@ import { createWriteStream, type WriteStream } from 'node:fs'
 import { mkdir, rm } from 'node:fs/promises'
 import path from 'node:path'
 import readline from 'node:readline'
+import { pipeline } from 'node:stream/promises'
 
 import { TaskProcessRegistry } from './process-registry.js'
 
@@ -238,39 +239,36 @@ export class AdbStreams {
   async captureScreenshot(taskId: string, targetPath: string, signal: AbortSignal) {
     await mkdir(path.dirname(targetPath), { recursive: true })
     const killGraceMs = this.options.killGraceMs ?? 3000
+    const child = spawn(this.adbPath, [
+      '-s', this.deviceSerial, 'exec-out', 'screencap', '-p',
+    ], { shell: false })
+    this.processes.add(taskId, child)
+    child.stderr.resume()
 
-    await new Promise<void>((resolve, reject) => {
-      const child = spawn(this.adbPath, [
-        '-s', this.deviceSerial, 'exec-out', 'screencap', '-p',
-      ], { shell: false })
-      this.processes.add(taskId, child)
-      child.stderr.resume()
+    const abort = () => terminate(child, killGraceMs)
+    signal.addEventListener('abort', abort, { once: true })
+    if (signal.aborted) abort()
 
-      const output = createWriteStream(targetPath, { flags: 'w' })
-      child.stdout.pipe(output)
-      const abort = () => terminate(child, killGraceMs)
-      signal.addEventListener('abort', abort, { once: true })
-      let settled = false
-
-      const finish = async (error?: Error) => {
-        if (settled) return
-        settled = true
-        signal.removeEventListener('abort', abort)
-        this.processes.remove(taskId, child)
-        if (error) {
-          output.destroy()
-          await rm(targetPath, { force: true }).catch(() => undefined)
-          reject(error)
-          return
-        }
-        if (!output.closed) await new Promise<void>((done) => output.end(done))
-        resolve()
-      }
-
-      child.on('error', (error) => { void finish(error) })
-      child.on('close', (code) => {
-        void finish(code === 0 ? undefined : new Error(signal.aborted ? '截图已取消' : '截图失败'))
-      })
+    const processClosed = new Promise<number | null>((resolve, reject) => {
+      child.once('error', reject)
+      child.once('close', resolve)
     })
+    const outputCompleted = pipeline(
+      child.stdout,
+      createWriteStream(targetPath, { flags: 'w' }),
+    )
+
+    try {
+      const [code] = await Promise.all([processClosed, outputCompleted])
+      if (code !== 0) throw new Error(signal.aborted ? '截图已取消' : '截图失败')
+    } catch (error) {
+      terminate(child, killGraceMs)
+      await Promise.allSettled([processClosed, outputCompleted])
+      await rm(targetPath, { force: true }).catch(() => undefined)
+      throw errorFromUnknown(error)
+    } finally {
+      signal.removeEventListener('abort', abort)
+      this.processes.remove(taskId, child)
+    }
   }
 }
