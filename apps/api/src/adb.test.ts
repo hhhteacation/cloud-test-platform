@@ -23,12 +23,14 @@ function result(code = 0, stdout = '', stderr = ''): ProcessResult {
   return { code, stdout, stderr }
 }
 
-async function createHarness() {
+async function createHarness(videoNames: string[] = ['input.mp4']) {
   const root = await mkdtemp(path.join(tmpdir(), 'cloud-test-adb-executor-'))
   roots.push(root)
-  const inputPath = path.join(root, 'input.mp4')
+  const inputPaths = videoNames.map((name) => path.join(root, name))
+  const inputContents = videoNames.map((_, index) => index === 0 ? 'input-video' : `input-video-${index}`)
+  const inputPath = inputPaths[0]
   const apkPath = path.join(root, 'test.apk')
-  await writeFile(inputPath, 'input-video')
+  await Promise.all(inputPaths.map((videoPath, index) => writeFile(videoPath, inputContents[index])))
   await writeFile(apkPath, 'apk')
 
   const database = new PlatformDatabase({
@@ -47,12 +49,12 @@ async function createHarness() {
     kind: 'apk', originalName: 'test.apk', mimeType: 'application/vnd.android.package-archive',
     storagePath: apkPath, sizeBytes: 3, sha256: 'apk-sha', packageName: 'com.morphoinc.videopostprocessor',
   })
-  const video = database.insertArtifact({
-    kind: 'video', originalName: 'input.mp4', mimeType: 'video/mp4',
-    storagePath: inputPath, sizeBytes: 11, sha256: 'video-sha',
-  })
+  const videos = videoNames.map((name, index) => database.insertArtifact({
+    kind: 'video' as const, originalName: name, mimeType: 'video/mp4',
+    storagePath: inputPaths[index], sizeBytes: Buffer.byteLength(inputContents[index]), sha256: `video-sha-${index}`,
+  }))
   const task = database.createTask({
-    name: 'executor seam', apkArtifactId: apk.id, videoArtifactId: video.id,
+    name: 'executor seam', apkArtifactId: apk.id, videoArtifactIds: videos.map((video) => video.id),
     deviceIds: ['device-1'], timeoutSeconds: 30,
   })
   const [job] = database.listQueuedDeviceRunJobs(task.id)
@@ -304,7 +306,7 @@ describe('AdbRunExecutor cross-module seam', () => {
       'diagnostics/failure/logcat-full.txt',
       'diagnostics/failure/evidence-capture-result.json',
     ]) {
-      expect(failureEvidenceRefs.some((ref) => ref.endsWith(`/evidence/${evidenceRef}`))).toBe(true)
+      expect(failureEvidenceRefs.some((ref) => ref.endsWith(evidenceRef))).toBe(true)
     }
   })
 
@@ -439,4 +441,63 @@ describe('AdbRunExecutor cross-module seam', () => {
       status: 'failed', failureCode: 'ADB_OBSERVATION_FAILED',
     })
   }, 15_000)
+
+  it('executes multiple videos in user order with isolated local attempts and video-scoped outputs', async () => {
+    const { database, execution, root } = await createHarness(['first.mp4', 'second.mp4'])
+    const carrierExecution: DeviceRunExecution = {
+      ...execution,
+      apkPackageName: 'com.sdktest.platform',
+    }
+    const appConfig: AppConfig = {
+      ...defaultConfig, rootDir: root, adbPath: 'adb', tasksDir: path.join(root, 'tasks'),
+      dataDir: root, databasePath: path.join(root, 'cloud-test.sqlite'), minFreeDiskBytes: 1, pollIntervalMs: 1,
+    }
+    const runner: ProcessRunner = { async run() { return result() } }
+    const contexts: Array<{ taskId: string; input: string; runDirectory: string; remoteTaskRoot: string }> = []
+    const executor = new AdbRunExecutor(
+      database, carrierExecution, createMediaChecker(), appConfig, runner,
+      {
+        createDevice: () => new FakeDevice(() => undefined),
+        createStreams: () => createStreams(() => undefined),
+        createAppPreparer: () => preparer,
+        createProtocolExecutor: () => ({
+          async execute(context) {
+            contexts.push({
+              taskId: context.taskId,
+              input: context.input.originalName,
+              runDirectory: context.local.runDirectory,
+              remoteTaskRoot: context.paths.remoteTaskRoot,
+            })
+            await mkdir(context.local.runDirectory, { recursive: true })
+            await writeFile(context.local.outputPath, `output-${context.input.originalName}`)
+            return {
+              inputSizeBytes: 13,
+              outputSizeBytes: 20,
+              outputSha256: `sha-${context.input.originalName}`,
+              remoteOutputFile: context.paths.remoteOutputFile,
+            }
+          },
+        }),
+      },
+    )
+
+    await executor.execute()
+
+    expect(contexts.map((context) => context.input)).toEqual(['first.mp4', 'second.mp4'])
+    expect(new Set(contexts.map((context) => context.taskId)).size).toBe(2)
+    expect(new Set(contexts.map((context) => context.remoteTaskRoot)).size).toBe(2)
+    for (const [index, context] of contexts.entries()) {
+      expect(context.runDirectory).toContain(path.join(
+        'device-runs', execution.runId, 'videos', execution.videos[index].taskVideoId, 'attempts', '1',
+      ))
+    }
+
+    const task = database.getTask(execution.taskId)!
+    expect(task.status).toBe('passed')
+    expect(task.videos.map((video) => task.videoRuns[video.id]['device-1'])).toEqual([
+      expect.objectContaining({ status: 'passed', attempts: [expect.objectContaining({ attemptNumber: 1, status: 'passed' })], primaryOutput: expect.any(Object) }),
+      expect.objectContaining({ status: 'passed', attempts: [expect.objectContaining({ attemptNumber: 1, status: 'passed' })], primaryOutput: expect.any(Object) }),
+    ])
+  }, 15_000)
+
 })

@@ -29,12 +29,21 @@ function createQueuedRun(input: MockCreateTaskInput['executions'][number]): Devi
 }
 
 function createTask(input: MockCreateTaskInput): TestTask {
+  const id = `task-${Date.now()}`
   return {
-    id: `task-${Date.now()}`,
+    id,
     platform: 'android',
     name: input.name,
     apk: input.apk,
     asset: input.asset,
+    videos: (input.assets ?? [input.asset]).map((asset, sequence) => ({
+      id: `mock-task-video-${sequence}`,
+      taskId: id,
+      artifactId: asset.id,
+      sequence,
+      displayName: asset.name,
+      asset,
+    })),
     deviceIds: input.deviceIds,
     connectionMode: input.connectionMode,
     status: 'queued',

@@ -50,6 +50,18 @@ describe('AppConfig', () => {
     expect(overridden.maxTaskInputVideoBytes).toBe(123456)
   })
 
+  it('提供可调的任务输出膨胀系数与单视频运行开销', () => {
+    const defaults = loadConfig({ HOME: '/tmp/home' })
+    expect(defaults.taskOutputExpansionFactor).toBe(1.5)
+    expect(defaults.taskVideoRunOverheadBytes).toBe(320 * 1024 * 1024)
+    const overridden = loadConfig({
+      HOME: '/tmp/home', TASK_OUTPUT_EXPANSION_FACTOR: '2.25', TASK_VIDEO_RUN_OVERHEAD_BYTES: '4096',
+    })
+    expect(overridden.taskOutputExpansionFactor).toBe(2.25)
+    expect(overridden.taskVideoRunOverheadBytes).toBe(4096)
+    expect(() => loadConfig({ HOME: '/tmp/home', TASK_OUTPUT_EXPANSION_FACTOR: '0' })).toThrow(ConfigError)
+  })
+
   it('为全量 Logcat 提供独立容量配置', () => {
     expect(loadConfig({ HOME: '/tmp/home' }).maxLogcatBytes).toBe(256 * 1024 * 1024)
     expect(loadConfig({ HOME: '/tmp/home', MAX_LOGCAT_BYTES: '8192' }).maxLogcatBytes).toBe(8192)

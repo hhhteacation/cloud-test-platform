@@ -1108,3 +1108,191 @@ a,
   color: #98a2b3;
   cursor: not-allowed;
 }
+
+.video-selection-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.video-selection-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.video-selection-card .ant-card-body {
+  display: grid;
+  grid-template-columns: 34px 132px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 12px !important;
+}
+
+.video-selection-card video {
+  width: 132px;
+  height: 76px;
+  border-radius: 6px;
+  background: #111827;
+  object-fit: cover;
+}
+
+.video-sequence {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 50%;
+  color: #1677ff;
+  background: #e6f4ff;
+  font-weight: 700;
+}
+
+.video-selection-meta {
+  display: grid;
+  min-width: 0;
+  gap: 7px;
+}
+
+.video-selection-actions {
+  justify-self: end;
+}
+
+.multi-video-report-layout {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  min-height: 520px;
+  overflow: hidden;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+}
+
+.report-video-nav {
+  padding: 16px 12px;
+  background: #f8fafc;
+  border-right: 1px solid #e5e7eb;
+}
+
+.report-video-nav-heading,
+.report-device-switcher,
+.video-comparison-title,
+.video-result-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.report-video-nav-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.report-video-nav-item.ant-btn {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  width: 100%;
+  height: auto;
+  min-height: 52px;
+  padding: 8px 10px;
+  text-align: left;
+}
+
+.report-video-index {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border-radius: 50%;
+  background: rgb(255 255 255 / 70%);
+  font-weight: 700;
+}
+
+.report-video-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.report-video-detail {
+  display: grid;
+  align-content: start;
+  gap: 18px;
+  min-width: 0;
+  padding: 18px;
+}
+
+.report-device-switcher {
+  flex-wrap: wrap;
+}
+
+.video-comparison-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.video-comparison-panel {
+  overflow: hidden;
+  border: 1px solid #dbe3ed;
+  border-radius: 10px;
+  background: #0f172a;
+}
+
+.video-comparison-title {
+  padding: 10px 12px;
+  background: #fff;
+}
+
+.video-comparison-panel video,
+.video-comparison-empty {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #020617;
+}
+
+.video-comparison-panel video {
+  object-fit: contain;
+}
+
+.video-comparison-empty {
+  display: grid;
+  place-items: center;
+}
+
+.video-comparison-empty .ant-empty-description {
+  color: #cbd5e1;
+}
+
+.video-result-summary {
+  align-items: flex-start;
+  flex-direction: column;
+}
+
+.video-result-summary .ant-progress {
+  width: 100%;
+}
+
+@media (max-width: 1000px) {
+  .multi-video-report-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .report-video-nav {
+    border-right: 0;
+    border-bottom: 1px solid #e5e7eb;
+  }
+
+  .report-video-nav-list {
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .video-comparison-grid {
+    grid-template-columns: 1fr;
+  }
+}

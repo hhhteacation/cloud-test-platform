@@ -1,5 +1,7 @@
 export const MAX_APK_SIZE_BYTES = 1024 * 1024 * 1024
 export const MAX_VIDEO_SIZE_BYTES = 4 * 1024 * 1024 * 1024
+export const MAX_TASK_VIDEOS = 10
+export const MAX_TASK_INPUT_VIDEO_BYTES = 10 * 1024 * 1024 * 1024
 
 export type UploadArtifactKind = 'apk' | 'video'
 
