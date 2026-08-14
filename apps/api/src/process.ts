@@ -138,7 +138,9 @@ export function runProcess(
       ? setTimeout(() => terminate(new ProcessError(`命令执行超时：${command}`, command, args)), options.timeoutMs)
       : undefined
 
-    const onAbort = () => terminate(new DOMException('任务已取消', 'AbortError'))
+    // Keep a ProcessError wrapper so the bounded stdout/stderr and exit code
+    // remain available to the domain layer when cancellation interrupts adb.
+    const onAbort = () => terminate(new ProcessError('命令执行已取消', command, args))
 
     function result(code: number): ProcessResult {
       return {
