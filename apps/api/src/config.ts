@@ -20,6 +20,8 @@ export interface AppConfig {
   deviceSerial?: string
   maxApkBytes: number
   maxVideoBytes: number
+  maxTaskVideos: number
+  maxTaskInputVideoBytes: number
   minFreeDiskBytes: number
   maxConcurrentUploads: number
   maxProcessOutputBytes: number
@@ -86,6 +88,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     deviceSerial,
     maxApkBytes: positiveInteger(env, 'MAX_APK_BYTES', 1024 * 1024 * 1024),
     maxVideoBytes: positiveInteger(env, 'MAX_VIDEO_BYTES', 4 * 1024 * 1024 * 1024),
+    maxTaskVideos: positiveInteger(env, 'MAX_TASK_VIDEOS', 10),
+    maxTaskInputVideoBytes: positiveInteger(env, 'MAX_TASK_INPUT_VIDEO_BYTES', 10 * 1024 * 1024 * 1024),
     minFreeDiskBytes: positiveInteger(env, 'MIN_FREE_DISK_BYTES', 10 * 1024 * 1024 * 1024),
     maxConcurrentUploads: positiveInteger(env, 'MAX_CONCURRENT_UPLOADS', 2),
     maxProcessOutputBytes: positiveInteger(env, 'MAX_PROCESS_OUTPUT_BYTES', 4 * 1024 * 1024),

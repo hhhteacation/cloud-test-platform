@@ -9,11 +9,23 @@ import type {
   DevicePlatform,
   DeviceProfile,
   TaskConnectionMode,
+  NetworkConnectionOperationStart,
 } from '../types.js'
 import type { DeviceDiscoveryProvider } from './device-provider.js'
 
 export class DeviceRegistrationError extends Error {
-  constructor(message: string, readonly code: string, readonly statusCode = 400) {
+  constructor(
+    message: string,
+    readonly code: string,
+    readonly statusCode = 400,
+    readonly evidence?: {
+      adbExitCode?: number
+      adbStdout?: string
+      adbStderr?: string
+      adbStdoutTruncated?: boolean
+      adbStderrTruncated?: boolean
+    },
+  ) {
     super(message)
     this.name = 'DeviceRegistrationError'
   }
@@ -64,6 +76,8 @@ function unavailableReason(device: DeviceProfile, endpoints: DeviceEndpoint[]) {
 export class DeviceRegistryService {
   private readonly providers = new Map<DevicePlatform, DeviceDiscoveryProvider>()
   private readonly registeredRefreshes = new Map<DevicePlatform, Promise<DeviceProfile[]>>()
+  private readonly networkOperationControllers = new Map<string, AbortController>()
+  private readonly networkEndpointLocks = new Set<string>()
 
   constructor(
     private readonly database: PlatformDatabase,
@@ -118,6 +132,7 @@ export class DeviceRegistryService {
    * for the same platform share one scan instead of queueing duplicate ADB work.
    */
   refreshRegistered(platform: DevicePlatform = 'android'): Promise<DeviceProfile[]> {
+    this.assertNoActiveNetworkOperation()
     const activeRefresh = this.registeredRefreshes.get(platform)
     if (activeRefresh) return activeRefresh
 
@@ -231,6 +246,11 @@ export class DeviceRegistryService {
   }
 
   async connectNetwork(deviceId: string, host: string, port: number) {
+    this.assertNoActiveNetworkOperation()
+    return this.connectNetworkInternal(deviceId, host, port)
+  }
+
+  private async connectNetworkInternal(deviceId: string, host: string, port: number, options: { signal?: AbortSignal; detailedFailure?: boolean } = {}) {
     const device = this.database.getDevice(deviceId)
     if (!device) throw new DeviceRegistrationError('物理设备不存在', 'DEVICE_NOT_FOUND', 404)
     const normalizedHost = host?.trim().replace(/^\[|\]$/g, '')
@@ -246,8 +266,24 @@ export class DeviceRegistryService {
 
     const provider = this.provider('android')
     if (!provider.connectNetwork) throw new DeviceRegistrationError('当前 Android Provider 不支持联网 ADB', 'NETWORK_ADB_NOT_AVAILABLE', 409)
-    const candidate = await provider.connectNetwork(normalizedHost, port)
+    const candidate = await provider.connectNetwork(normalizedHost, port, options)
     if (candidate.connectionStatus !== 'online') {
+      const evidence = {
+        adbExitCode: candidate.adbExitCode,
+        adbStdout: candidate.adbStdout,
+        adbStderr: candidate.adbStderr,
+        adbStdoutTruncated: candidate.adbStdoutTruncated,
+        adbStderrTruncated: candidate.adbStderrTruncated,
+      }
+      const cancelled = options.signal?.aborted || candidate.failureCode === 'NETWORK_CONNECTION_CANCELLED'
+      if (cancelled) {
+        throw new DeviceRegistrationError(
+          candidate.failureMessage ?? '联网连接已取消',
+          'NETWORK_CONNECTION_CANCELLED',
+          409,
+          evidence,
+        )
+      }
       const endpoint = this.database.upsertDeviceEndpoint({
         deviceId,
         kind: 'network',
@@ -255,9 +291,20 @@ export class DeviceRegistryService {
         host: normalizedHost,
         port,
         status: candidate.connectionStatus,
-        lastError: 'adb connect 未能建立可用连接',
+        lastError: candidate.failureMessage ?? 'adb connect 未能建立可用连接',
       })
-      throw new DeviceRegistrationError(`联网设备连接失败：${endpoint.lastError}`, 'NETWORK_DEVICE_OFFLINE', 409)
+      throw new DeviceRegistrationError(
+        `联网设备连接失败：${endpoint.lastError}`,
+        options.detailedFailure ? candidate.failureCode ?? 'ADB_DEVICE_OFFLINE' : 'NETWORK_DEVICE_OFFLINE',
+        409,
+        {
+          adbExitCode: candidate.adbExitCode,
+          adbStdout: candidate.adbStdout,
+          adbStderr: candidate.adbStderr,
+          adbStdoutTruncated: candidate.adbStdoutTruncated,
+          adbStderrTruncated: candidate.adbStderrTruncated,
+        },
+      )
     }
 
     this.assertNetworkIdentityMatches(device, candidate)
@@ -274,21 +321,148 @@ export class DeviceRegistryService {
   }
 
   async disconnectNetwork(deviceId: string, endpointId: string) {
+    this.assertNoActiveNetworkOperation()
     const endpoint = this.requireNetworkEndpoint(deviceId, endpointId)
     await this.provider('android').disconnect?.(endpoint.adbSerial)
     return this.database.updateDeviceEndpointStatus(endpoint.id, 'offline')
   }
 
   async refreshNetwork(deviceId: string, endpointId: string) {
+    this.assertNoActiveNetworkOperation()
     const endpoint = this.requireNetworkEndpoint(deviceId, endpointId)
     if (!endpoint.host || !endpoint.port) throw new DeviceRegistrationError('联网 Endpoint 缺少主机地址', 'INVALID_NETWORK_ENDPOINT')
-    return this.connectNetwork(deviceId, endpoint.host, endpoint.port)
+    return this.connectNetworkInternal(deviceId, endpoint.host, endpoint.port)
   }
 
   async removeNetworkEndpoint(deviceId: string, endpointId: string) {
+    this.assertNoActiveNetworkOperation()
     const endpoint = this.requireNetworkEndpoint(deviceId, endpointId)
     await this.provider('android').disconnect?.(endpoint.adbSerial)
     return this.database.removeDeviceEndpoint(endpointId)
+  }
+
+  startNetworkConnectionOperation(): NetworkConnectionOperationStart {
+    if (this.database.hasActiveNetworkConnectionOperation()) {
+      throw new DeviceRegistrationError('已有联网批量连接操作正在执行', 'NETWORK_CONNECT_OPERATION_ALREADY_RUNNING', 409)
+    }
+    const items = this.database.listDevices()
+      .flatMap((device) => {
+        const endpoint = this.database.listDeviceEndpoints(device.id).find((item) => item.kind === 'network' && item.host && item.port)
+        if (!endpoint?.host || !endpoint.port) return []
+        return [{ deviceId: device.id, endpointId: endpoint.id, host: endpoint.host, port: endpoint.port }]
+      })
+    if (items.length === 0) {
+      throw new DeviceRegistrationError('没有配置联网 Endpoint 的设备', 'NO_NETWORK_ENDPOINTS', 409)
+    }
+    const operation = this.database.networkConnectionOperations.create({ items })
+    const controller = new AbortController()
+    this.networkOperationControllers.set(operation.id, controller)
+    void this.runNetworkConnectionOperation(operation.id, controller)
+    return { operationId: operation.id, status: operation.status, totalCount: operation.totalCount }
+  }
+
+  getNetworkConnectionOperation(operationId: string) {
+    const operation = this.database.getNetworkConnectionOperation(operationId)
+    if (!operation) throw new DeviceRegistrationError('联网批量连接操作不存在', 'NETWORK_CONNECT_OPERATION_NOT_FOUND', 404)
+    return operation
+  }
+
+  cancelNetworkConnectionOperation(operationId: string) {
+    const operation = this.getNetworkConnectionOperation(operationId)
+    if (operation.status === 'queued' || operation.status === 'running') {
+      this.database.networkConnectionOperations.requestCancel(operationId)
+      this.networkOperationControllers.get(operationId)?.abort()
+    }
+    return this.getNetworkConnectionOperation(operationId)
+  }
+
+  private assertNoActiveNetworkOperation() {
+    if (this.database.hasActiveNetworkConnectionOperation()) {
+      throw new DeviceRegistrationError('批量联网连接正在执行，当前单台操作被拒绝', 'NETWORK_CONNECT_OPERATION_CONFLICT', 409)
+    }
+  }
+
+  private async runNetworkConnectionOperation(operationId: string, controller: AbortController) {
+    const store = this.database.networkConnectionOperations
+    try {
+      store.markRunning(operationId)
+      const operation = store.get(operationId)
+      if (!operation) return
+      let cursor = 0
+      const worker = async () => {
+        while (true) {
+          const current = store.get(operationId)
+          if (!current || cursor >= current.items.length) return
+          const item = current.items[cursor++]
+          if (store.isCancelRequested(operationId)) {
+            store.updateItem(item.id, {
+              status: 'cancelled',
+              failureCode: 'NETWORK_CONNECTION_CANCELLED',
+              failureMessage: '联网连接已取消',
+              cancelReason: current.cancelReason ?? 'USER_REQUESTED',
+              finishedAt: new Date().toISOString(),
+            })
+            continue
+          }
+          const device = this.database.getDevice(item.deviceId)
+          const queueStatus = device ? this.database.getDeviceQueueStatus(device.id) : 'idle'
+          if (queueStatus === 'queued' || queueStatus === 'running') {
+            store.updateItem(item.id, { status: 'skipped', skipReason: 'DEVICE_BUSY', failureCode: 'DEVICE_BUSY', failureMessage: '设备正在执行测试任务', finishedAt: new Date().toISOString() })
+            continue
+          }
+          if (this.networkEndpointLocks.has(item.endpointId)) {
+            store.updateItem(item.id, { status: 'skipped', skipReason: 'NETWORK_ENDPOINT_BUSY', failureCode: 'NETWORK_ENDPOINT_BUSY', failureMessage: '该联网 Endpoint 正在执行其他连接操作', finishedAt: new Date().toISOString() })
+            continue
+          }
+          this.networkEndpointLocks.add(item.endpointId)
+          store.updateItem(item.id, { status: 'running', startedAt: new Date().toISOString() })
+          try {
+            await this.connectNetworkInternal(item.deviceId, item.host, item.port, { signal: controller.signal, detailedFailure: true })
+            store.updateItem(item.id, { status: 'succeeded', finishedAt: new Date().toISOString() })
+          } catch (error) {
+            const cancelled = controller.signal.aborted || store.isCancelRequested(operationId)
+            const registrationError = error instanceof DeviceRegistrationError ? error : undefined
+            store.updateItem(item.id, {
+              status: cancelled ? 'cancelled' : 'failed',
+              failureCode: cancelled ? 'NETWORK_CONNECTION_CANCELLED' : registrationError?.code ?? 'ADB_COMMAND_FAILED',
+              failureMessage: cancelled ? '联网连接已取消' : registrationError?.message ?? (error instanceof Error ? error.message : String(error)),
+              adbExitCode: registrationError?.evidence?.adbExitCode,
+              adbStdout: registrationError?.evidence?.adbStdout,
+              adbStderr: registrationError?.evidence?.adbStderr,
+              adbStdoutTruncated: registrationError?.evidence?.adbStdoutTruncated,
+              adbStderrTruncated: registrationError?.evidence?.adbStderrTruncated,
+              cancelReason: cancelled ? store.get(operationId)?.cancelReason ?? 'USER_REQUESTED' : undefined,
+              finishedAt: new Date().toISOString(),
+            })
+          } finally {
+            this.networkEndpointLocks.delete(item.endpointId)
+          }
+        }
+      }
+      await Promise.all(Array.from({ length: Math.min(3, operation.items.length) }, () => worker()))
+      const final = store.get(operationId)
+      if (!final) return
+      const hasPending = final.items.some((item) => item.status === 'pending' || item.status === 'running')
+      if (hasPending || store.isCancelRequested(operationId)) {
+        for (const item of final.items.filter((candidate) => candidate.status === 'pending' || candidate.status === 'running')) {
+          store.updateItem(item.id, { status: 'cancelled', failureCode: 'NETWORK_CONNECTION_CANCELLED', failureMessage: '联网连接已取消', cancelReason: final.cancelReason ?? 'USER_REQUESTED', finishedAt: new Date().toISOString() })
+        }
+        store.finish(operationId, 'cancelled', final.cancelReason ?? 'USER_REQUESTED')
+      } else {
+        store.finish(operationId, 'completed')
+      }
+      store.purgeCompleted(100)
+    } catch (error) {
+      const current = store.get(operationId)
+      if (current) {
+        for (const item of current.items.filter((candidate) => candidate.status === 'pending' || candidate.status === 'running')) {
+          store.updateItem(item.id, { status: 'failed', failureCode: 'NETWORK_CONNECT_OPERATION_FAILED', failureMessage: error instanceof Error ? error.message : String(error), finishedAt: new Date().toISOString() })
+        }
+        store.finish(operationId, 'failed')
+      }
+    } finally {
+      this.networkOperationControllers.delete(operationId)
+    }
   }
 
   private findNetworkEndpoint(host: string, port: number, adbSerial: string) {
@@ -336,7 +510,18 @@ export class DeviceRegistryService {
   private assertNetworkIdentityMatches(device: DeviceProfile, candidate: DeviceDiscoveryCandidate) {
     const identityError = this.networkIdentityError(device, candidate)
     if (identityError) {
-      throw new DeviceRegistrationError(identityError, candidate.hardwareSerial ? 'DEVICE_IDENTITY_MISMATCH' : 'DEVICE_IDENTITY_UNVERIFIED', 409)
+      throw new DeviceRegistrationError(
+        identityError,
+        candidate.hardwareSerial ? 'DEVICE_IDENTITY_MISMATCH' : 'DEVICE_IDENTITY_UNVERIFIED',
+        409,
+        {
+          adbExitCode: candidate.adbExitCode,
+          adbStdout: candidate.adbStdout,
+          adbStderr: candidate.adbStderr,
+          adbStdoutTruncated: candidate.adbStdoutTruncated,
+          adbStderrTruncated: candidate.adbStderrTruncated,
+        },
+      )
     }
   }
 

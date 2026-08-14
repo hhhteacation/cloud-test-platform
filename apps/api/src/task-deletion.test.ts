@@ -146,6 +146,38 @@ describe('TaskDeletionService', () => {
     expect(JSON.parse(String(audit?.deleted_artifact_ids))).toEqual([videoA.artifact.id])
   })
 
+  it('删除多视频任务时清理全部孤立视频，并保留被其他任务引用的视频', async () => {
+    const apk = await createArtifact('apk', 'multi-apk')
+    const first = await createArtifact('video', 'multi-first')
+    const shared = await createArtifact('video', 'multi-shared')
+    const other = await createArtifact('video', 'other-only')
+    const multiTask = database.createTask({
+      name: '多视频任务', apkArtifactId: apk.artifact.id,
+      videoArtifactIds: [first.artifact.id, shared.artifact.id],
+      deviceIds: ['honor-magic-v3'], timeoutSeconds: 300,
+    })
+    const otherTask = database.createTask({
+      name: '共享视频任务', apkArtifactId: apk.artifact.id,
+      videoArtifactIds: [shared.artifact.id, other.artifact.id],
+      deviceIds: ['honor-magic-v3'], timeoutSeconds: 300,
+    })
+    finishTask(multiTask.id)
+    finishTask(otherTask.id)
+
+    const receipt = await service.deleteTask(multiTask.id)
+
+    expect(receipt.deletedArtifactIds).toEqual([first.artifact.id])
+    expect(receipt.retainedArtifactIds).toEqual(expect.arrayContaining([apk.artifact.id, shared.artifact.id]))
+    expect(database.getArtifact(first.artifact.id)).toBeUndefined()
+    expect(database.getArtifact(shared.artifact.id)).toBeDefined()
+    expect(database.getArtifact(other.artifact.id)).toBeDefined()
+    expect(database.getTask(otherTask.id)?.videos.map((video) => video.artifactId)).toEqual([
+      shared.artifact.id, other.artifact.id,
+    ])
+    expect(await pathExists(first.directory)).toBe(false)
+    expect(await pathExists(shared.directory)).toBe(true)
+  })
+
   it('拒绝删除排队中任务，并且不改变数据库和文件', async () => {
     const apk = await createArtifact('apk', 'queued-apk')
     const video = await createArtifact('video', 'queued-video')

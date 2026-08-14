@@ -224,7 +224,10 @@ export class TaskDeletionService {
               SELECT 1 FROM tasks
               WHERE apk_artifact_id = ? OR video_artifact_id = ?
             )
-        `).run(artifact.id, artifact.id, artifact.id)
+            AND NOT EXISTS (
+              SELECT 1 FROM task_videos WHERE artifact_id = ?
+            )
+        `).run(artifact.id, artifact.id, artifact.id, artifact.id)
 
         if (Number(result.changes) !== 1) {
           throw new TaskDeletionError(
@@ -394,7 +397,15 @@ export class TaskDeletionService {
   }
 
   private readTaskArtifacts(task: TaskRow): ArtifactRow[] {
-    const ids = Array.from(new Set([task.apk_artifact_id, task.video_artifact_id]))
+    const taskVideoRows = this.database.db.prepare(`
+      SELECT artifact_id FROM task_videos
+      WHERE task_id = ?
+      ORDER BY sequence
+    `).all(task.id) as Array<Record<string, unknown>>
+    const videoArtifactIds = taskVideoRows.length > 0
+      ? taskVideoRows.map((row) => valueAsString(row.artifact_id))
+      : [task.video_artifact_id]
+    const ids = Array.from(new Set([task.apk_artifact_id, ...videoArtifactIds]))
     const artifacts: ArtifactRow[] = []
 
     for (const id of ids) {
@@ -417,9 +428,16 @@ export class TaskDeletionService {
   private countOtherArtifactReferences(taskId: string, artifactId: string) {
     const row = this.database.db.prepare(`
       SELECT COUNT(*) AS count
-      FROM tasks
-      WHERE id <> ? AND (apk_artifact_id = ? OR video_artifact_id = ?)
-    `).get(taskId, artifactId, artifactId) as Record<string, unknown> | undefined
+      FROM (
+        SELECT id AS task_id
+        FROM tasks
+        WHERE id <> ? AND (apk_artifact_id = ? OR video_artifact_id = ?)
+        UNION
+        SELECT task_id
+        FROM task_videos
+        WHERE task_id <> ? AND artifact_id = ?
+      )
+    `).get(taskId, artifactId, artifactId, taskId, artifactId) as Record<string, unknown> | undefined
     return countValue(row)
   }
 

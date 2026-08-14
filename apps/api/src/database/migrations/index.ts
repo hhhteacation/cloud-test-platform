@@ -8,6 +8,13 @@ import { compatibilityColumns } from './002-compatibility-columns.js'
 import { deviceEndpointsMigration } from './003-device-endpoints.js'
 import { taskExecutionEndpointColumns } from './004-task-execution-endpoint-columns.js'
 import { structuredExecutionFailureColumns } from './005-structured-execution-failure.js'
+import { networkConnectionOperationsMigration } from './006-network-connection-operations.js'
+import {
+  preserveNetworkConnectionSnapshots,
+  preserveNetworkConnectionSnapshotsMigration,
+} from './007-preserve-network-connection-snapshots.js'
+import { taskVideosMigration } from './008-task-videos.js'
+import { migrateVideoRunResults, videoRunResultsDefinition } from './009-video-run-results.js'
 
 export interface DatabaseMigration {
   id: string
@@ -86,6 +93,26 @@ export const DATABASE_MIGRATIONS: DatabaseMigration[] = [
         ensureColumns(db, table, columns)
       }
     },
+  },
+  {
+    id: '006-network-connection-operations',
+    definition: networkConnectionOperationsMigration,
+    up: (db) => db.exec(networkConnectionOperationsMigration),
+  },
+  {
+    id: '007-preserve-network-connection-snapshots',
+    definition: preserveNetworkConnectionSnapshotsMigration,
+    up: preserveNetworkConnectionSnapshots,
+  },
+  {
+    id: '008-task-videos',
+    definition: taskVideosMigration,
+    up: (db) => db.exec(taskVideosMigration),
+  },
+  {
+    id: '009-video-run-results',
+    definition: videoRunResultsDefinition,
+    up: migrateVideoRunResults,
   },
 ]
 
