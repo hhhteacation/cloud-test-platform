@@ -81,6 +81,7 @@ describe('createTaskModel', () => {
       mode: 'real',
       listDevices: vi.fn(), refreshDevices: vi.fn(), discoverDevices: vi.fn(), discoverNetworkDevices: vi.fn(), registerDevice: vi.fn(),
       connectNetworkDevice: vi.fn(), disconnectNetworkDevice: vi.fn(), refreshNetworkDevice: vi.fn(), removeNetworkDevice: vi.fn(),
+      startNetworkConnectionOperation: vi.fn(), getNetworkConnectionOperation: vi.fn(), cancelNetworkConnectionOperation: vi.fn(),
       uploadArtifact: vi.fn(async (_file, kind) => artifact(kind, `${kind}-1`)),
       createTask: vi.fn(async (input) => ({
         id: 'task-1', platform: 'android' as const, name: input.name,

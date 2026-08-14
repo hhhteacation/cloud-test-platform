@@ -3,7 +3,13 @@ import type { FastifyInstance } from 'fastify'
 import { DeviceRegistrationError, type DeviceRegistryService } from '../devices/device-registry.js'
 
 function handleDeviceError(request: { log: { error: (error: unknown) => void } }, reply: { code: (status: number) => { send: (body: unknown) => unknown } }, error: unknown, fallback: string) {
-  if (error instanceof DeviceRegistrationError) return reply.code(error.statusCode).send({ code: error.code, message: error.message })
+  if (error instanceof DeviceRegistrationError) {
+    return reply.code(error.statusCode).send({
+      code: error.code,
+      message: error.message,
+      ...(error.evidence ? { evidence: error.evidence } : {}),
+    })
+  }
   request.log.error(error)
   return reply.code(500).send({ code: 'DEVICE_OPERATION_FAILED', message: fallback })
 }
@@ -50,6 +56,30 @@ export function registerDeviceRoutes(app: FastifyInstance, deviceRegistry: Devic
       return reply.send(endpoint)
     } catch (error) {
       return handleDeviceError(request, reply, error, '联网 ADB 连接失败')
+    }
+  })
+
+  app.post('/api/devices/network/connect-all', async (request, reply) => {
+    try {
+      return reply.code(202).send(deviceRegistry.startNetworkConnectionOperation())
+    } catch (error) {
+      return handleDeviceError(request, reply, error, '批量联网 ADB 连接启动失败')
+    }
+  })
+
+  app.get<{ Params: { operationId: string } }>('/api/devices/network/connect-operations/:operationId', async (request, reply) => {
+    try {
+      return reply.send(deviceRegistry.getNetworkConnectionOperation(request.params.operationId))
+    } catch (error) {
+      return handleDeviceError(request, reply, error, '批量联网 ADB 连接状态查询失败')
+    }
+  })
+
+  app.post<{ Params: { operationId: string } }>('/api/devices/network/connect-operations/:operationId/cancel', async (request, reply) => {
+    try {
+      return reply.send(deviceRegistry.cancelNetworkConnectionOperation(request.params.operationId))
+    } catch (error) {
+      return handleDeviceError(request, reply, error, '批量联网 ADB 连接取消失败')
     }
   })
 

@@ -7,6 +7,7 @@ import { AuditStore } from './audit-store.js'
 import { DeviceEndpointStore } from './device-endpoint-store.js'
 import { DeviceRunStore } from './device-run-store.js'
 import { DeviceStore } from './device-store.js'
+import { NetworkConnectionOperationStore } from './network-connection-operation-store.js'
 import { TaskStore, TaskStoreError } from './task-store.js'
 import { VideoExecutionStore } from './video-execution-store.js'
 
@@ -88,6 +89,98 @@ describe('领域 Store', () => {
     expect(endpoints.get(network.id)).toBeUndefined()
 
     db.close()
+  })
+
+  it('批量联网操作完成历史只保留最近 100 条', () => {
+    const db = new DatabaseSync(':memory:')
+    db.exec('PRAGMA foreign_keys = ON')
+    runDatabaseMigrations(db, ':memory:')
+    const store = new NetworkConnectionOperationStore(db)
+    const timestamp = new Date().toISOString()
+    const insertDevice = db.prepare(`
+      INSERT INTO devices
+        (id, name, manufacturer, os_version, api_level, architecture, execution_mode, eligible, registered_at)
+      VALUES (?, ?, 'Example', 'Android 15', 35, 'arm64-v8a', 'adb', 1, ?)
+    `)
+    const insertEndpoint = db.prepare(`
+      INSERT INTO device_endpoints
+        (id, device_id, kind, adb_serial, host, port, status, created_at, updated_at)
+      VALUES (?, ?, 'network', ?, '192.0.2.10', 5555, 'offline', ?, ?)
+    `)
+    for (let index = 0; index < 101; index += 1) {
+      insertDevice.run(`device-${index}`, `设备-${index}`, timestamp)
+      insertEndpoint.run(`endpoint-${index}`, `device-${index}`, `192.0.2.10:${5555 + index}`, timestamp, timestamp)
+    }
+    const ids: string[] = []
+    for (let index = 0; index < 101; index += 1) {
+      const operation = store.create({ id: `network-connect-history-${index}`, items: [{ deviceId: `device-${index}`, endpointId: `endpoint-${index}`, host: '192.0.2.10', port: 5555 }] })
+      store.finish(operation.id, 'completed')
+      ids.push(operation.id)
+    }
+
+    expect(store.purgeCompleted(100)).toBe(1)
+    expect(store.get(ids[0])).toBeUndefined()
+    expect(store.get(ids[1])).toBeDefined()
+    expect(store.get(ids[100])).toBeDefined()
+    db.close()
+  })
+
+  it('批量联网操作 Store 保留 Endpoint 快照、支持取消和重启终止', () => {
+    const db = new DatabaseSync(':memory:')
+    db.exec('PRAGMA foreign_keys = ON')
+    runDatabaseMigrations(db, ':memory:')
+    const store = new NetworkConnectionOperationStore(db)
+    const timestamp = new Date().toISOString()
+    db.prepare(`
+      INSERT INTO devices
+        (id, name, manufacturer, os_version, api_level, architecture, execution_mode, eligible, registered_at)
+      VALUES ('device-1', '设备-1', 'Example', 'Android 15', 35, 'arm64-v8a', 'adb', 1, ?),
+             ('device-2', '设备-2', 'Example', 'Android 15', 35, 'arm64-v8a', 'adb', 1, ?),
+             ('device-3', '设备-3', 'Example', 'Android 15', 35, 'arm64-v8a', 'adb', 1, ?)
+    `).run(timestamp, timestamp, timestamp)
+    db.prepare(`
+      INSERT INTO device_endpoints
+        (id, device_id, kind, adb_serial, host, port, status, created_at, updated_at)
+      VALUES ('endpoint-1', 'device-1', 'network', '192.0.2.10:5555', '192.0.2.10', 5555, 'offline', ?, ?),
+             ('endpoint-2', 'device-2', 'network', '192.0.2.11:5555', '192.0.2.11', 5555, 'offline', ?, ?),
+             ('endpoint-3', 'device-3', 'network', '192.0.2.12:5555', '192.0.2.12', 5555, 'offline', ?, ?)
+    `).run(timestamp, timestamp, timestamp, timestamp, timestamp, timestamp)
+    const operation = store.create({ items: [{ deviceId: 'device-1', endpointId: 'endpoint-1', host: '192.0.2.10', port: 5555 }] })
+    expect(operation).toMatchObject({ status: 'queued', totalCount: 1, items: [{ status: 'pending', host: '192.0.2.10', port: 5555 }] })
+    expect(store.requestCancel(operation.id)?.cancelRequested).toBe(true)
+    store.markRunning(operation.id)
+    store.updateItem(operation.items[0].id, { status: 'cancelled', cancelReason: 'USER_REQUESTED', finishedAt: new Date().toISOString() })
+    expect(store.finish(operation.id, 'cancelled')?.items[0]).toMatchObject({ status: 'cancelled', cancelReason: 'USER_REQUESTED' })
+
+    store.updateItem(operation.items[0].id, {
+      status: 'failed', failureCode: 'ADB_PORT_REFUSED', failureMessage: 'connection refused',
+      adbExitCode: 1, adbStdout: 'stdout evidence', adbStderr: 'stderr evidence', adbStderrTruncated: true,
+    })
+    expect(store.updateItem(operation.items[0].id, { status: 'cancelled' })).toMatchObject({
+      status: 'cancelled', failureCode: 'ADB_PORT_REFUSED', failureMessage: 'connection refused',
+      adbExitCode: 1, adbStdout: 'stdout evidence', adbStderr: 'stderr evidence', adbStderrTruncated: true,
+    })
+    expect(() => store.create({ items: [{ deviceId: 'device-2', endpointId: 'endpoint-2', host: '192.0.2.11', port: 5555 }] })).not.toThrow()
+    db.close()
+
+    const restarted = new DatabaseSync(':memory:')
+    runDatabaseMigrations(restarted, ':memory:')
+    restarted.prepare(`
+      INSERT INTO devices
+        (id, name, manufacturer, os_version, api_level, architecture, execution_mode, eligible, registered_at)
+      VALUES ('device-3', '设备-3', 'Example', 'Android 15', 35, 'arm64-v8a', 'adb', 1, ?)
+    `).run(timestamp)
+    restarted.prepare(`
+      INSERT INTO device_endpoints
+        (id, device_id, kind, adb_serial, host, port, status, created_at, updated_at)
+      VALUES ('endpoint-3', 'device-3', 'network', '192.0.2.12:5555', '192.0.2.12', 5555, 'offline', ?, ?)
+    `).run(timestamp, timestamp)
+    const restartedStore = new NetworkConnectionOperationStore(restarted)
+    const active = restartedStore.create({ items: [{ deviceId: 'device-3', endpointId: 'endpoint-3', host: '192.0.2.12', port: 5555 }] })
+    restartedStore.markRunning(active.id)
+    expect(restartedStore.markInterrupted()).toBe(1)
+    expect(restartedStore.get(active.id)).toMatchObject({ status: 'cancelled', cancelReason: 'SERVICE_RESTARTED', items: [{ status: 'cancelled', cancelReason: 'SERVICE_RESTARTED' }] })
+    restarted.close()
   })
 })
 

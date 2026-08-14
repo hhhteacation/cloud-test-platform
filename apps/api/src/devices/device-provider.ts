@@ -8,6 +8,6 @@ export interface DeviceDiscoveryProvider {
   readonly platform: DevicePlatform
   discover(): Promise<DeviceDiscoveryCandidate[]>
   discoverNetwork?(): Promise<DeviceDiscoveryCandidate[]>
-  connectNetwork?(host: string, port: number): Promise<DeviceDiscoveryCandidate>
+  connectNetwork?(host: string, port: number, options?: { signal?: AbortSignal }): Promise<DeviceDiscoveryCandidate>
   disconnect?(serial: string): Promise<void>
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import type { ProcessResult } from '../process.js'
+import { ProcessError, type ProcessResult } from '../process.js'
 import { AndroidAdbDeviceProvider, parseAdbDevices, parseAdbMdnsServices, type AdbCommandExecutor } from './android-adb-provider.js'
 
 const ok = (stdout: string): ProcessResult => ({ code: 0, stdout, stderr: '' })
@@ -110,10 +110,52 @@ describe('AndroidAdbDeviceProvider', () => {
     })
   })
 
+  it('联网 connect 的原始诊断会映射为可解释 Failure，并保留 stdout/stderr', async () => {
+    const execute: AdbCommandExecutor = async () => ({ code: 1, stdout: 'adb stdout', stderr: 'failed to connect: Connection refused' })
+    await expect(new AndroidAdbDeviceProvider('/fake/adb', execute).connectNetwork('192.0.2.30', 5555)).resolves.toMatchObject({
+      serial: '192.0.2.30:5555', connectionStatus: 'offline', failureCode: 'ADB_PORT_REFUSED',
+      failureMessage: 'failed to connect: Connection refused', adbExitCode: 1, adbStdout: 'adb stdout', adbStderr: 'failed to connect: Connection refused',
+    })
+  })
+
+  it('联网设备 unauthorized 不会伪装成 online', async () => {
+    const execute: AdbCommandExecutor = async (_command, args) => {
+      if (args[0] === 'connect') return ok('already connected')
+      if (args[0] === 'devices') return ok('List of devices attached\n192.0.2.31:5555 unauthorized\n')
+      throw new Error(`unexpected ${args.join(' ')}`)
+    }
+    await expect(new AndroidAdbDeviceProvider('/fake/adb', execute).connectNetwork('192.0.2.31', 5555)).resolves.toMatchObject({
+      serial: '192.0.2.31:5555', connectionStatus: 'unauthorized', failureCode: 'ADB_UNAUTHORIZED',
+    })
+  })
+
   it('联网 connect 失败时返回 offline 候选而不伪造在线状态', async () => {
     const execute: AdbCommandExecutor = async () => { throw new Error('connect failed') }
     await expect(new AndroidAdbDeviceProvider('/fake/adb', execute).connectNetwork('192.168.1.30', 5555)).resolves.toMatchObject({
       serial: '192.168.1.30:5555', connectionStatus: 'offline',
+    })
+  })
+
+  it('取消联网 connect 时保留 NETWORK_CONNECTION_CANCELLED 和底层 Evidence', async () => {
+    const controller = new AbortController()
+    const execute: AdbCommandExecutor = async (_command, args, options) => {
+      if (args[0] === 'connect') {
+        controller.abort()
+        throw new ProcessError('命令执行已取消', '/fake/adb', args, {
+          code: -1,
+          stdout: 'partial adb stdout',
+          stderr: 'partial adb stderr',
+          stdoutTruncated: false,
+          stderrTruncated: true,
+        })
+      }
+      expect(options?.signal).toBe(controller.signal)
+      throw new Error('should not run after cancellation')
+    }
+
+    await expect(new AndroidAdbDeviceProvider('/fake/adb', execute).connectNetwork('192.0.2.32', 5555, { signal: controller.signal })).resolves.toMatchObject({
+      serial: '192.0.2.32:5555', connectionStatus: 'offline', failureCode: 'NETWORK_CONNECTION_CANCELLED',
+      failureMessage: '命令执行已取消', adbExitCode: -1, adbStdout: 'partial adb stdout', adbStderr: 'partial adb stderr', adbStderrTruncated: true,
     })
   })
 
