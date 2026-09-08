@@ -28,7 +28,11 @@ describe('EndpointResolvingWorker', () => {
     const worker = new EndpointResolvingWorker(database, registry, delegate)
     await worker.execute(job)
 
-    expect(registry.resolveExecutionEndpoint).toHaveBeenCalledWith('device-1', 'network')
+    expect(registry.resolveExecutionEndpoint).toHaveBeenCalledWith(
+      'device-1',
+      'network',
+      { signal: expect.any(AbortSignal) },
+    )
     expect(database.assignDeviceRunEndpoint).toHaveBeenCalledWith(job, {
       endpointId: 'endpoint-network', connectionKind: 'network', adbSerial: '192.168.1.20:5555',
     })
@@ -75,5 +79,71 @@ describe('EndpointResolvingWorker', () => {
     await worker.execute(job)
 
     expect(delegate.execute).not.toHaveBeenCalled()
+  })
+
+  it('首次 Endpoint 解析超过 deadline 时终止扫描并记录结构化失败', async () => {
+    let observedSignal: AbortSignal | undefined
+    const database = {
+      getTask: vi.fn(() => ({ connectionMode: 'auto', status: 'queued' })),
+      assignDeviceRunEndpoint: vi.fn(),
+      failDeviceRun: vi.fn(),
+    } as unknown as PlatformDatabase
+    const registry = {
+      resolveExecutionEndpoint: vi.fn(async (
+        _deviceId: string,
+        _mode: string,
+        options?: { signal?: AbortSignal },
+      ) => {
+        observedSignal = options?.signal
+        await new Promise((resolve) => setTimeout(resolve, 80))
+        return { id: 'late-endpoint', kind: 'usb', adbSerial: 'serial-1', status: 'online' }
+      }),
+    } as unknown as DeviceRegistryService
+    const delegate = { execute: vi.fn(), cancelTask: vi.fn() } satisfies DeviceRunWorker
+
+    const worker = new EndpointResolvingWorker(database, registry, delegate, 10)
+    await worker.execute(job)
+
+    expect(observedSignal?.aborted).toBe(true)
+    expect(database.failDeviceRun).toHaveBeenCalledWith(
+      job,
+      'ENDPOINT_RESOLUTION_DEADLINE_EXCEEDED',
+      '首次 Endpoint 解析超过 10ms 预算',
+    )
+    expect(database.assignDeviceRunEndpoint).not.toHaveBeenCalled()
+    expect(delegate.execute).not.toHaveBeenCalled()
+  })
+
+  it('任务取消会终止正在进行的首次 Endpoint 解析且拒绝迟到绑定', async () => {
+    let observedSignal: AbortSignal | undefined
+    const database = {
+      getTask: vi.fn(() => ({ connectionMode: 'network', status: 'queued' })),
+      assignDeviceRunEndpoint: vi.fn(),
+      failDeviceRun: vi.fn(),
+    } as unknown as PlatformDatabase
+    const registry = {
+      resolveExecutionEndpoint: vi.fn(async (
+        _deviceId: string,
+        _mode: string,
+        options?: { signal?: AbortSignal },
+      ) => {
+        observedSignal = options?.signal
+        await new Promise((resolve) => setTimeout(resolve, 80))
+        return { id: 'late-endpoint', kind: 'network', adbSerial: '192.0.2.1:5555', status: 'online' }
+      }),
+    } as unknown as DeviceRegistryService
+    const delegate = { execute: vi.fn(), cancelTask: vi.fn() } satisfies DeviceRunWorker
+    const worker = new EndpointResolvingWorker(database, registry, delegate, 1_000)
+
+    const execution = worker.execute(job)
+    await vi.waitFor(() => expect(observedSignal).toBeDefined())
+    worker.cancelTask(job.taskId)
+    await execution
+
+    expect(observedSignal?.aborted).toBe(true)
+    expect(database.failDeviceRun).not.toHaveBeenCalled()
+    expect(database.assignDeviceRunEndpoint).not.toHaveBeenCalled()
+    expect(delegate.execute).not.toHaveBeenCalled()
+    expect(delegate.cancelTask).toHaveBeenCalledWith(job.taskId)
   })
 })

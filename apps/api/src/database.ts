@@ -5,14 +5,35 @@ import type { DeviceRunExecution, DeviceRunJob } from './database/contracts.js'
 import { runDatabaseMigrations } from './database/migrations/index.js'
 import { markInterruptedTasks, seedDefaultDevices } from './database/schema.js'
 import { ArtifactStore } from './database/stores/artifact-store.js'
+import { ConnectionEventStore, type AppendConnectionEventInput } from './database/stores/connection-event-store.js'
 import { AuditStore } from './database/stores/audit-store.js'
 import { DeviceRunStore } from './database/stores/device-run-store.js'
 import { DeviceStore, type UpsertAdbDeviceInput } from './database/stores/device-store.js'
 import { DeviceEndpointStore, type UpsertEndpointInput } from './database/stores/device-endpoint-store.js'
+import {
+  DeviceConnectionStateStore,
+  type BeginDeviceConnectionOperationInput,
+  type CommitDeviceConnectionOperationInput,
+  type CurrentDeviceConnectionOperationInput,
+  type ExpireDeviceConnectionOperationInput,
+  type RecordDeviceConnectionHealthFailureInput,
+  type RecordPassiveDeviceConnectionHealthInput,
+} from './database/stores/device-connection-state-store.js'
 import { NetworkConnectionOperationStore } from './database/stores/network-connection-operation-store.js'
 import { TaskStore } from './database/stores/task-store.js'
 import { VideoExecutionStore } from './database/stores/video-execution-store.js'
 import type { ArtifactRecord, CheckResult, MediaIntegrityResult } from './types.js'
+
+export interface ActivateVerifiedNetworkEndpointInput {
+  deviceId: string
+  operationId: string
+  generation: number
+  endpoint: UpsertEndpointInput
+  profile: Parameters<DeviceStore['updateProfile']>[1]
+  event: Omit<AppendConnectionEventInput, 'deviceId' | 'operationId' | 'generation'>
+}
+
+class StaleDeviceConnectionActivationError extends Error {}
 
 export type { DeviceRunExecution, DeviceRunJob, VideoRunExecution } from './database/contracts.js'
 
@@ -30,8 +51,10 @@ export interface PlatformDatabaseOptions {
 export class PlatformDatabase {
   readonly db: DatabaseSync
   readonly artifacts: ArtifactStore
+  readonly connectionEvents: ConnectionEventStore
   readonly devices: DeviceStore
   readonly deviceEndpoints: DeviceEndpointStore
+  readonly deviceConnectionStates: DeviceConnectionStateStore
   readonly deviceRuns: DeviceRunStore
   readonly audit: AuditStore
   readonly videoExecutions: VideoExecutionStore
@@ -45,8 +68,10 @@ export class PlatformDatabase {
     runDatabaseMigrations(this.db, resolvedDatabasePath)
 
     this.artifacts = new ArtifactStore(this.db)
+    this.connectionEvents = new ConnectionEventStore(this.db)
     this.devices = new DeviceStore(this.db)
     this.deviceEndpoints = new DeviceEndpointStore(this.db)
+    this.deviceConnectionStates = new DeviceConnectionStateStore(this.db)
     this.audit = new AuditStore(this.db)
     this.deviceRuns = new DeviceRunStore(this.db, this.audit)
     this.videoExecutions = new VideoExecutionStore(this.db)
@@ -60,6 +85,15 @@ export class PlatformDatabase {
     )
     this.networkConnectionOperations = new NetworkConnectionOperationStore(this.db)
     this.networkConnectionOperations.markInterrupted()
+    for (const operation of this.deviceConnectionStates.markInterrupted()) {
+      this.connectionEvents.append({
+        ...operation,
+        eventType: 'operation_interrupted',
+        source: 'service_startup',
+        result: 'cancelled',
+        failureCode: 'SERVICE_RESTARTED',
+      })
+    }
     this.deviceRuns.setTaskStateChangedHandler((taskId) => this.tasks.recompute(taskId))
     this.videoExecutions.setResultStateChangedHandler((taskId, runId) => {
       this.deviceRuns.recomputeFromVideoResults(taskId, runId)
@@ -84,10 +118,60 @@ export class PlatformDatabase {
   listDeviceEndpoints(deviceId: string) { return this.deviceEndpoints.listForDevice(deviceId) }
   getDeviceEndpoint(id: string) { return this.deviceEndpoints.get(id) }
   getDeviceEndpointByKind(deviceId: string, kind: Parameters<DeviceEndpointStore['getByDeviceAndKind']>[1]) { return this.deviceEndpoints.getByDeviceAndKind(deviceId, kind) }
+  getDeviceEndpointByTransport(deviceId: string, kind: Parameters<DeviceEndpointStore['getByDeviceAndTransport']>[1], transportType: Parameters<DeviceEndpointStore['getByDeviceAndTransport']>[2]) { return this.deviceEndpoints.getByDeviceAndTransport(deviceId, kind, transportType) }
   getDeviceEndpointBySerial(serial: string) { return this.deviceEndpoints.getBySerial(serial) }
   upsertDeviceEndpoint(input: UpsertEndpointInput) { return this.deviceEndpoints.upsert(input) }
   updateDeviceEndpointStatus(id: string, status: Parameters<DeviceEndpointStore['updateStatus']>[1], lastError?: string) { return this.deviceEndpoints.updateStatus(id, status, lastError) }
+  recordDeviceEndpointHealthFailure(id: string, input: Parameters<DeviceEndpointStore['recordHealthFailure']>[1]) { return this.deviceEndpoints.recordHealthFailure(id, input) }
+  recordDeviceEndpointHealthSuccess(id: string, evaluatedAt?: string) { return this.deviceEndpoints.recordHealthSuccess(id, evaluatedAt) }
+  updateDeviceEndpointObservation(id: string, input: Parameters<DeviceEndpointStore['updateObservation']>[1]) { return this.deviceEndpoints.updateObservation(id, input) }
   removeDeviceEndpoint(id: string) { return this.deviceEndpoints.remove(id) }
+  appendConnectionEvent(input: AppendConnectionEventInput) { return this.connectionEvents.append(input) }
+  listConnectionEvents(deviceId: string) { return this.connectionEvents.listForDevice(deviceId) }
+  getDeviceConnectionState(deviceId: string) { return this.deviceConnectionStates.get(deviceId) }
+  listDeviceConnectionStates() { return this.deviceConnectionStates.list() }
+  setDeviceConnectionManagementMode(deviceId: string, mode: Parameters<DeviceConnectionStateStore['setManagementMode']>[1]) { return this.deviceConnectionStates.setManagementMode(deviceId, mode) }
+  beginDeviceConnectionOperation(input: BeginDeviceConnectionOperationInput) { return this.deviceConnectionStates.begin(input) }
+  commitDeviceConnectionOperation(input: CommitDeviceConnectionOperationInput) { return this.deviceConnectionStates.commit(input) }
+  restoreDeviceConnectionOperationAfterAbort(input: CommitDeviceConnectionOperationInput) { return this.deviceConnectionStates.restoreAfterAbort(input) }
+  isCurrentDeviceConnectionOperation(input: CurrentDeviceConnectionOperationInput) { return this.deviceConnectionStates.isCurrent(input) }
+  expireDeviceConnectionOperation(input: ExpireDeviceConnectionOperationInput) { return this.deviceConnectionStates.expire(input) }
+  recordDeviceConnectionHealthFailure(input: RecordDeviceConnectionHealthFailureInput) { return this.deviceConnectionStates.recordHealthFailure(input) }
+  recordPassiveDeviceConnectionHealth(input: RecordPassiveDeviceConnectionHealthInput) { return this.deviceConnectionStates.recordPassiveHealth(input) }
+  activateVerifiedNetworkEndpoint(input: ActivateVerifiedNetworkEndpointInput) {
+    if (input.endpoint.deviceId !== input.deviceId || input.endpoint.kind !== 'network') {
+      throw new Error('联网 Endpoint 激活参数与目标物理设备不一致')
+    }
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const identity = {
+        deviceId: input.deviceId,
+        operationId: input.operationId,
+        generation: input.generation,
+      }
+      if (!this.deviceConnectionStates.isCurrent(identity)) {
+        throw new StaleDeviceConnectionActivationError()
+      }
+      this.devices.updateProfile(input.deviceId, input.profile)
+      this.devices.markSeen(input.deviceId)
+      const endpoint = this.deviceEndpoints.upsert(input.endpoint)
+      if (!this.deviceConnectionStates.commit({
+        ...identity,
+        desiredState: 'connected',
+        observedState: 'online',
+        activeEndpointId: endpoint.id,
+      })) {
+        throw new StaleDeviceConnectionActivationError()
+      }
+      this.connectionEvents.append({ ...identity, ...input.event })
+      this.db.exec('COMMIT')
+      return endpoint
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      if (error instanceof StaleDeviceConnectionActivationError) return undefined
+      throw error
+    }
+  }
   hasActiveNetworkConnectionOperation() { return this.networkConnectionOperations.hasActive() }
   getNetworkConnectionOperation(id: string) { return this.networkConnectionOperations.get(id) }
 
@@ -126,8 +210,8 @@ export class PlatformDatabase {
   addVideoLog(taskId: string, runId: string, videoRunResultId: string, message: string, level = 'info') {
     return this.audit.addVideoLog(taskId, runId, videoRunResultId, message, level)
   }
-  upsertVideoCheck(runId: string, videoRunResultId: string, check: CheckResult) {
-    return this.audit.upsertVideoCheck(runId, videoRunResultId, check)
+  upsertVideoCheck(runId: string, videoRunResultId: string, check: CheckResult, attemptId?: string) {
+    return this.audit.upsertVideoCheck(runId, videoRunResultId, check, attemptId)
   }
 
   createVideoAttempt(videoRunResultId: string, input?: Parameters<VideoExecutionStore['createAttempt']>[1]) {
@@ -142,8 +226,8 @@ export class PlatformDatabase {
   finishVideoAttempt(attemptId: string, input: Parameters<VideoExecutionStore['finishAttempt']>[1]) {
     return this.videoExecutions.finishAttempt(attemptId, input)
   }
-  recordVideoMediaIntegrity(videoRunResultId: string, result: MediaIntegrityResult) {
-    return this.videoExecutions.recordMediaIntegrity(videoRunResultId, result)
+  recordVideoMediaIntegrity(videoRunResultId: string, result: MediaIntegrityResult, attemptId?: string) {
+    return this.videoExecutions.recordMediaIntegrity(videoRunResultId, result, attemptId)
   }
   blockRemainingVideoResults(input: Parameters<VideoExecutionStore['blockRemaining']>[0]) {
     return this.videoExecutions.blockRemaining(input)

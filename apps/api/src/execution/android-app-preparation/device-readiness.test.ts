@@ -39,6 +39,7 @@ function clock() {
 
 class ReadinessFakeDevice implements AndroidPreparationDevice {
   readonly calls: string[][] = []
+  readonly connectionStatusSignals: Array<AbortSignal | undefined> = []
   private inspection = 0
 
   constructor(
@@ -50,7 +51,10 @@ class ReadinessFakeDevice implements AndroidPreparationDevice {
     } = {},
   ) {}
 
-  async connectionStatus() { return this.options.status ?? 'online' }
+  async connectionStatus(signal?: AbortSignal) {
+    this.connectionStatusSignals.push(signal)
+    return this.options.status ?? 'online'
+  }
   async isPackageInstalled() { return true }
 
   async run(args: string[]): Promise<ProcessResult> {
@@ -163,6 +167,18 @@ OtherVendorState
       power: ready.power,
       windowPolicy: 'KeyguardServiceDelegate\n  showing=false\n  secure=true',
     })).toMatchObject({ condition: 'ready' })
+  })
+})
+
+describe('AndroidDeviceReadiness Attempt cancellation', () => {
+  it('propagates the Attempt signal to the initial connection observation', async () => {
+    const device = new ReadinessFakeDevice([ready])
+    const { readiness } = createReadiness(device)
+    const controller = new AbortController()
+
+    await readiness.prepare(controller.signal)
+
+    expect(device.connectionStatusSignals).toEqual([controller.signal])
   })
 })
 

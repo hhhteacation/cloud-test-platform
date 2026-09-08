@@ -81,7 +81,7 @@ export interface AndroidAppPreparer {
 
 /** Internal seam used by the preparer and its Fake ADB tests. */
 export interface AndroidPreparationDevice {
-  connectionStatus(): Promise<AdbConnectionStatus>
+  connectionStatus(signal: AbortSignal): Promise<AdbConnectionStatus>
   run(
     args: string[],
     signal: AbortSignal,

@@ -10,6 +10,10 @@ function registryStub(overrides: Partial<DeviceRegistryService> = {}) {
     refreshRegistered: vi.fn(async () => []),
     discover: vi.fn(async () => []),
     discoverNetwork: vi.fn(async () => []),
+    listNetworkObservations: vi.fn(() => []),
+    listNetworkObservationDecisions: vi.fn(() => []),
+    reconcileManagedNetworkObservations: vi.fn(async () => []),
+    adoptManagedNetworkObservation: vi.fn(),
     register: vi.fn(),
     connectNetwork: vi.fn(),
     disconnectNetwork: vi.fn(),
@@ -18,11 +22,61 @@ function registryStub(overrides: Partial<DeviceRegistryService> = {}) {
     startNetworkConnectionOperation: vi.fn(),
     getNetworkConnectionOperation: vi.fn(),
     cancelNetworkConnectionOperation: vi.fn(),
+    setNetworkManagementMode: vi.fn(),
     ...overrides,
   } as unknown as DeviceRegistryService
 }
 
 describe('device routes', () => {
+  it('GET Observation 决策只读返回 Shadow 结果，不触发连接调度', async () => {
+    const decisions = [{
+      observation: {
+        id: 'observation-1', source: 'mdns', serviceInstance: 'adb-SERIAL-1-candidate',
+        transportType: 'wireless_tls', host: '192.0.2.10', port: 37123,
+        observedAt: '2026-08-25T00:00:00.000Z', expiresAt: '2026-08-25T00:01:00.000Z',
+        verificationStatus: 'unverified',
+      },
+      deviceId: 'device-1', deviceName: '测试机', managementMode: 'shadow',
+      status: 'shadow_only', reasonCode: 'SHADOW_MODE_NO_ACTION',
+    }]
+    const registry = registryStub({
+      listNetworkObservationDecisions: vi.fn(() => decisions as never),
+    })
+    const app = Fastify()
+    registerDeviceRoutes(app, registry)
+
+    const response = await app.inject({ method: 'GET', url: '/api/devices/network/observation-decisions' })
+
+    expect(response.statusCode).toBe(200)
+    expect(response.json()).toEqual(decisions)
+    expect(registry.listNetworkObservationDecisions).toHaveBeenCalledTimes(1)
+    expect(registry.reconcileManagedNetworkObservations).not.toHaveBeenCalled()
+    expect(registry.adoptManagedNetworkObservation).not.toHaveBeenCalled()
+    await app.close()
+  })
+
+  it('GET Managed Adoption 状态只读返回 Gate 快照，不触发连接调度', async () => {
+    const status = {
+      enabled: false, running: false, cyclesStarted: 0, cyclesCompleted: 0,
+      adoptionFailures: 0, discoveryFailures: 0,
+    }
+    const getManagedObservationAdoptionStatus = vi.fn(() => status)
+    const registry = registryStub()
+    const app = Fastify()
+    registerDeviceRoutes(app, registry, { getManagedObservationAdoptionStatus })
+
+    const response = await app.inject({
+      method: 'GET', url: '/api/devices/network/managed-adoption-status',
+    })
+
+    expect(response.statusCode).toBe(200)
+    expect(response.json()).toEqual(status)
+    expect(getManagedObservationAdoptionStatus).toHaveBeenCalledTimes(1)
+    expect(registry.reconcileManagedNetworkObservations).not.toHaveBeenCalled()
+    expect(registry.adoptManagedNetworkObservation).not.toHaveBeenCalled()
+    await app.close()
+  })
+
   it('GET /api/devices 返回物理设备与 Endpoint 汇总', async () => {
     const registry = registryStub({
       listRegisteredSnapshot: vi.fn(async () => [{
@@ -111,6 +165,35 @@ describe('device routes', () => {
     expect((await app.inject({ method: 'GET', url: '/api/devices/network/connect-operations/network-connect-1' })).statusCode).toBe(200)
     const cancelled = await app.inject({ method: 'POST', url: '/api/devices/network/connect-operations/network-connect-1/cancel' })
     expect(cancelled.json()).toMatchObject({ cancelRequested: true })
+    await app.close()
+  })
+
+  it('PATCH 联网管理模式只接受 manual、shadow、managed 并返回结构化状态', async () => {
+    const state = {
+      deviceId: 'device-1', managementMode: 'managed' as const,
+      desiredNetworkState: 'connected' as const, observedNetworkState: 'online' as const,
+      connectionGeneration: 2, retryCount: 0, consecutiveFailures: 0,
+      updatedAt: '2026-08-25T00:00:00.000Z',
+    }
+    const registry = registryStub({ setNetworkManagementMode: vi.fn(() => state) })
+    const app = Fastify()
+    registerDeviceRoutes(app, registry)
+
+    const updated = await app.inject({
+      method: 'PATCH', url: '/api/devices/device-1/network-management', payload: { mode: 'managed' },
+    })
+    expect(updated.statusCode).toBe(200)
+    expect(updated.json()).toMatchObject({ deviceId: 'device-1', managementMode: 'managed' })
+    expect(registry.setNetworkManagementMode).toHaveBeenCalledWith('device-1', 'managed')
+
+    const invalid = await app.inject({
+      method: 'PATCH', url: '/api/devices/device-1/network-management', payload: { mode: 'automatic' },
+    })
+    expect(invalid.statusCode).toBe(400)
+    expect(invalid.json()).toEqual({
+      code: 'INVALID_NETWORK_MANAGEMENT_MODE', message: '联网管理模式必须是 manual、shadow 或 managed',
+    })
+    expect(registry.setNetworkManagementMode).toHaveBeenCalledTimes(1)
     await app.close()
   })
 

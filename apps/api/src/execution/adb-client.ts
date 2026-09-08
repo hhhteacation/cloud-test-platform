@@ -9,6 +9,14 @@ import { TaskExecutionError } from './execution-errors.js'
 
 export type AdbConnectionStatus = 'online' | 'offline' | 'unauthorized'
 
+export type AdbCommandHealthEvidence =
+  | { kind: 'healthy' }
+  | { kind: 'transport_failed'; failureCode: string }
+
+export interface AdbDeviceClientOptions {
+  onHealthEvidence?: (evidence: AdbCommandHealthEvidence) => void
+}
+
 export type AdbObservation<T> =
   | { kind: 'present'; value: T; result: ProcessResult }
   | { kind: 'absent'; result: ProcessResult }
@@ -38,16 +46,59 @@ function formatProcessResult(result: ProcessResult) {
   return `退出码=${result.code}${detail ? `；${detail}` : ''}`
 }
 
+function classifyTransportFailure(error: unknown): string | undefined {
+  const result = error instanceof ProcessError ? error.result : undefined
+  const detail = [
+    error instanceof Error ? error.message : String(error),
+    result?.stdout,
+    result?.stderr,
+  ].filter(Boolean).join('\n').toLowerCase()
+  if (/\bunauthorized\b/.test(detail)) return 'ADB_UNAUTHORIZED'
+  if (/\bdevice(?:\s+\S+)?\s+offline\b|\bdevice offline\b/.test(detail)) return 'ADB_DEVICE_OFFLINE'
+  if (/\bdevice(?:\s+\S+)?\s+not found\b|no devices\/emulators found/.test(detail)) return 'ADB_DEVICE_NOT_FOUND'
+  if (/connection refused|failed to connect|cannot connect/.test(detail)) return 'ADB_PORT_REFUSED'
+  if (/network is unreachable|no route to host|network is down/.test(detail)) return 'ADB_NETWORK_UNREACHABLE'
+  if (/connection reset|connection closed|transport (?:error|is closing)|protocol fault/.test(detail)) {
+    return 'ADB_TRANSPORT_LOST'
+  }
+  return undefined
+}
+
 export class AdbDeviceClient {
   constructor(
     private readonly adbPath: string,
     private readonly deviceSerial: string,
     private readonly runner: ProcessRunner = new BoundedProcessRunner(),
+    private readonly options: AdbDeviceClientOptions = {},
   ) {}
 
-  async connectionStatus(): Promise<AdbConnectionStatus> {
+  private recordSuccess() {
+    this.publishHealthEvidence({ kind: 'healthy' })
+  }
+
+  private publishHealthEvidence(evidence: AdbCommandHealthEvidence) {
     try {
-      const result = await this.runner.run(this.adbPath, ['devices'], { timeoutMs: 10_000 })
+      this.options.onHealthEvidence?.(evidence)
+    } catch {
+      // Health telemetry is best-effort and must never change ADB command semantics.
+    }
+  }
+
+  private recordFailure(error: unknown, signal: AbortSignal) {
+    if (signal.aborted) return
+    const failureCode = classifyTransportFailure(error)
+    if (failureCode) {
+      this.publishHealthEvidence({ kind: 'transport_failed', failureCode })
+      return
+    }
+    // ADB returned a command result from the selected device. Even when the
+    // command itself was rejected, that response is positive transport health.
+    if (error instanceof ProcessError && error.result && error.result.code >= 0) this.recordSuccess()
+  }
+
+  async connectionStatus(signal?: AbortSignal): Promise<AdbConnectionStatus> {
+    try {
+      const result = await this.runner.run(this.adbPath, ['devices'], { signal, timeoutMs: 10_000 })
       const line = result.stdout
         .split(/\r?\n/)
         .find((item) => item.startsWith(this.deviceSerial))
@@ -56,7 +107,8 @@ export class AdbDeviceClient {
       if (line.includes('\tdevice')) return 'online'
       if (line.includes('\tunauthorized')) return 'unauthorized'
       return 'offline'
-    } catch {
+    } catch (error) {
+      if (signal?.aborted) throw signal.reason ?? error
       return 'offline'
     }
   }
@@ -68,13 +120,16 @@ export class AdbDeviceClient {
     code = 'SDK_PROCESSING_FAILED',
   ): Promise<ProcessResult> {
     try {
-      return await this.runner.run(
+      const result = await this.runner.run(
         this.adbPath,
         ['-s', this.deviceSerial, ...args],
         { signal, timeoutMs },
       )
+      this.recordSuccess()
+      return result
     } catch (error) {
       if (signal.aborted) throw error
+      this.recordFailure(error, signal)
       const detail = error instanceof ProcessError
         ? error.result?.stderr || error.result?.stdout
         : undefined
@@ -100,13 +155,16 @@ export class AdbDeviceClient {
     capture: Pick<RunProcessOptions, 'captureStdoutPath' | 'captureStderrPath'> = {},
   ): Promise<ProcessResult> {
     try {
-      return await this.runner.run(
+      const result = await this.runner.run(
         this.adbPath,
         ['-s', this.deviceSerial, ...args],
         { signal, timeoutMs, ...capture },
       )
+      this.recordSuccess()
+      return result
     } catch (error) {
       if (signal.aborted) throw error
+      this.recordFailure(error, signal)
       if (error instanceof ProcessError && error.result) return error.result
       throw new TaskExecutionError(
         `设备=${this.deviceSerial}，观察=${describeOperation(args)}：${error instanceof Error ? error.message : String(error)}`,

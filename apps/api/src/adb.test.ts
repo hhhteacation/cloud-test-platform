@@ -218,6 +218,200 @@ describe('carrier result contract', () => {
 })
 
 describe('AdbRunExecutor cross-module seam', () => {
+  it('opens device commands and streams through one Gateway session with the Actual Connection snapshot', async () => {
+    const { database, execution, root } = await createHarness()
+    const appConfig: AppConfig = {
+      ...defaultConfig,
+      rootDir: root,
+      adbPath: 'adb',
+      tasksDir: path.join(root, 'tasks'),
+      dataDir: root,
+      databasePath: path.join(root, 'cloud-test.sqlite'),
+      minFreeDiskBytes: 1,
+      pollIntervalMs: 1,
+    }
+    const runner: ProcessRunner = { async run() { return result() } }
+    const device = new FakeDevice(() => undefined)
+    const streams = createStreams(() => undefined)
+    const openedSessions: unknown[] = []
+    const executor = new AdbRunExecutor(
+      database, execution, createMediaChecker(), appConfig, runner,
+      {
+        gateway: {
+          open(input) {
+            openedSessions.push({
+              connection: input.connection,
+              attempt: (input as { attempt?: unknown }).attempt,
+            })
+            return { device, streams }
+          },
+        },
+        createAppPreparer: () => preparer,
+        createProtocolExecutor: () => ({
+          async execute(context) {
+            await mkdir(context.local.runDirectory, { recursive: true })
+            await writeFile(context.local.outputPath, 'gateway-output')
+            return {
+              inputSizeBytes: 11,
+              outputSizeBytes: 14,
+              outputSha256: 'gateway-output-sha',
+              remoteOutputFile: context.paths.remoteOutputFile,
+            }
+          },
+        }),
+        now: () => new Date('2026-08-25T08:00:00.000Z'),
+      },
+    )
+
+    await executor.execute()
+
+    expect(database.getTask(execution.taskId)?.runs[execution.deviceId]).toMatchObject({ status: 'passed' })
+    expect(openedSessions).toEqual([{
+      connection: {
+        deviceId: execution.deviceId,
+        endpointId: execution.endpointId,
+        kind: 'usb',
+        adbSerial: 'SERIAL-1',
+        generation: 0,
+      },
+      attempt: {
+        signal: expect.any(Object),
+        deadlineAt: '2026-08-25T08:00:30.000Z',
+      },
+    }])
+  })
+
+  it('aborts the whole Attempt at its deadline and records a timeout instead of cancellation', async () => {
+    const { database, execution, root } = await createHarness()
+    const shortExecution: DeviceRunExecution = { ...execution, timeoutSeconds: 0.02 }
+    const appConfig: AppConfig = {
+      ...defaultConfig,
+      rootDir: root,
+      adbPath: 'adb',
+      tasksDir: path.join(root, 'tasks'),
+      dataDir: root,
+      databasePath: path.join(root, 'cloud-test.sqlite'),
+      minFreeDiskBytes: 1,
+      pollIntervalMs: 1,
+    }
+    const runner: ProcessRunner = { async run() { return result() } }
+    const device = new FakeDevice(() => undefined)
+    let gatewaySignal: AbortSignal | undefined
+    device.connectionStatus = async (signal?: AbortSignal) => new Promise((_, reject) => {
+      if (!signal) return reject(new Error('Attempt signal was not propagated'))
+      gatewaySignal = signal
+      if (signal.aborted) return reject(signal.reason)
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+    })
+    const executor = new AdbRunExecutor(
+      database, shortExecution, createMediaChecker(), appConfig, runner,
+      {
+        gateway: { open: () => ({ device, streams: createStreams(() => undefined) }) },
+        createAppPreparer: () => preparer,
+      },
+    )
+
+    await executor.execute()
+
+    const task = database.getTask(execution.taskId)!
+    const video = task.videos[0]!
+    expect(gatewaySignal?.aborted).toBe(true)
+    expect(task.status).toBe('failed')
+    expect(task.videoRuns[video.id][execution.deviceId]).toMatchObject({
+      status: 'failed',
+      failureCode: 'TASK_TIMEOUT',
+      attempts: [expect.objectContaining({ status: 'failed', failureCode: 'TASK_TIMEOUT' })],
+    })
+  })
+
+  it('does not create a retry Attempt when the Task is cancelled during connection recovery', async () => {
+    const { database, execution, root } = await createHarness()
+    const appConfig: AppConfig = {
+      ...defaultConfig,
+      rootDir: root,
+      adbPath: 'adb',
+      tasksDir: path.join(root, 'tasks'),
+      dataDir: root,
+      databasePath: path.join(root, 'cloud-test.sqlite'),
+      minFreeDiskBytes: 1,
+      pollIntervalMs: 1,
+    }
+    const runner: ProcessRunner = { async run() { return result() } }
+    const device = new FakeDevice(() => undefined)
+    device.connectionStatus = async () => 'offline'
+    let gatewayOpenCount = 0
+    const executor = new AdbRunExecutor(
+      database, execution, createMediaChecker(), appConfig, runner,
+      {
+        gateway: {
+          open: () => {
+            gatewayOpenCount += 1
+            return { device, streams: createStreams(() => undefined) }
+          },
+        },
+        createAppPreparer: () => preparer,
+        recoverExecution: async () => {
+          database.cancelTask(execution.taskId)
+          return execution
+        },
+      },
+    )
+
+    await executor.execute()
+
+    const task = database.getTask(execution.taskId)!
+    const video = task.videos[0]!
+    expect(task.status).toBe('cancelled')
+    expect(task.videoRuns[video.id][execution.deviceId].attempts).toHaveLength(1)
+    expect(gatewayOpenCount).toBe(1)
+  })
+
+  it('bounds connection recovery with its own deadline and abort signal', async () => {
+    const { database, execution, root } = await createHarness()
+    const appConfig = {
+      ...defaultConfig,
+      rootDir: root,
+      adbPath: 'adb',
+      tasksDir: path.join(root, 'tasks'),
+      dataDir: root,
+      databasePath: path.join(root, 'cloud-test.sqlite'),
+      minFreeDiskBytes: 1,
+      pollIntervalMs: 1,
+      attemptRecoveryDeadlineMs: 20,
+    } as AppConfig & { attemptRecoveryDeadlineMs: number }
+    const runner: ProcessRunner = { async run() { return result() } }
+    const device = new FakeDevice(() => undefined)
+    device.connectionStatus = async () => 'offline'
+    let recoveryContext: { signal: AbortSignal; deadlineAt: string } | undefined
+    const executor = new AdbRunExecutor(
+      database, execution, createMediaChecker(), appConfig, runner,
+      {
+        gateway: { open: () => ({ device, streams: createStreams(() => undefined) }) },
+        createAppPreparer: () => preparer,
+        recoverExecution: async (context?: { signal: AbortSignal; deadlineAt: string }) => {
+          recoveryContext = context
+          await new Promise((resolve) => setTimeout(resolve, 100))
+          return undefined
+        },
+      },
+    )
+
+    await executor.execute()
+
+    expect(recoveryContext).toMatchObject({
+      signal: expect.any(Object),
+      deadlineAt: expect.any(String),
+    })
+    expect(recoveryContext?.signal.aborted).toBe(true)
+    const task = database.getTask(execution.taskId)!
+    const video = task.videos[0]!
+    const videoRun = task.videoRuns[video.id][execution.deviceId]
+    expect(videoRun.attempts).toHaveLength(1)
+    expect(videoRun.logs).toEqual(expect.arrayContaining([
+      expect.stringContaining('CONNECTION_RECOVERY_DEADLINE_EXCEEDED'),
+    ]))
+  })
+
   it('records source, input, device snapshot, and evidence identity before application preparation', async () => {
     const { database, execution, root } = await createHarness()
     const appConfig: AppConfig = {
@@ -240,8 +434,7 @@ describe('AdbRunExecutor cross-module seam', () => {
     const executor = new AdbRunExecutor(
       database, execution, createMediaChecker(), appConfig, runner,
       {
-        createDevice: () => device,
-        createStreams: () => createStreams(() => undefined),
+        gateway: { open: () => ({ device, streams: createStreams(() => undefined) }) },
         createAppPreparer: () => failingPreparer,
         readSourceIdentity: async () => ({ commitSha: '0123456789abcdef', dirty: false }),
         now: () => new Date('2026-08-09T01:02:03.000Z'),
@@ -288,6 +481,14 @@ describe('AdbRunExecutor cross-module seam', () => {
       cancelled: false,
       error: { code: 'APK_INSTALL_FAILED', message: 'stop after manifest seam' },
     })
+    const taskView = database.getTask(execution.taskId)!
+    const taskVideo = taskView.videos[0]!
+    expect(taskView.videoRuns[taskVideo.id]['device-1'].attempts[0]).toMatchObject({
+      endpointId: 'missing-endpoint-id',
+      connectionKind: 'usb',
+      adbSerial: 'SERIAL-1',
+      endpointGeneration: 0,
+    })
     expect(await readFile(path.join(evidenceDirectory, 'diagnostics/failure/window.txt'), 'utf8'))
       .toContain('com.example/.MainActivity')
     expect(await readFile(path.join(evidenceDirectory, 'diagnostics/failure/ui.xml'), 'utf8'))
@@ -328,8 +529,7 @@ describe('AdbRunExecutor cross-module seam', () => {
     const executor = new AdbRunExecutor(
       database, execution, createMediaChecker(), appConfig, runner,
       {
-        createDevice: () => device,
-        createStreams: () => createStreams(() => undefined),
+        gateway: { open: () => ({ device, streams: createStreams(() => undefined) }) },
         createAppPreparer: () => preparer,
         readSourceIdentity: async () => ({ commitSha: 'offline-sha', dirty: true }),
       },
@@ -370,8 +570,10 @@ describe('AdbRunExecutor cross-module seam', () => {
     const executor = new AdbRunExecutor(
       database, unsupportedExecution, createMediaChecker(), appConfig, runner,
       {
-        createDevice: () => new FakeDevice(() => undefined),
-        createStreams: () => createStreams(() => undefined),
+        gateway: { open: () => ({
+          device: new FakeDevice(() => undefined),
+          streams: createStreams(() => undefined),
+        }) },
         createAppPreparer: () => preparer,
         readSourceIdentity: async () => ({ commitSha: 'unsupported-sha', dirty: false }),
       },
@@ -409,7 +611,7 @@ describe('AdbRunExecutor cross-module seam', () => {
     const streams = createStreams((handler) => { logLineHandler = handler })
     const executor = new AdbRunExecutor(
       database, execution, createMediaChecker(), appConfig, runner,
-      { createDevice: () => device, createStreams: () => streams, createAppPreparer: () => preparer },
+      { gateway: { open: () => ({ device, streams }) }, createAppPreparer: () => preparer },
     )
 
     await executor.execute()
@@ -432,7 +634,10 @@ describe('AdbRunExecutor cross-module seam', () => {
       : { kind: 'failed', error: new TaskExecutionError('permission denied', 'ADB_OBSERVATION_FAILED'), result: result(2, '', 'permission denied') } as const
     const executor = new AdbRunExecutor(
       database, execution, createMediaChecker(), appConfig, runner,
-      { createDevice: () => device, createStreams: () => createStreams(() => undefined), createAppPreparer: () => preparer },
+      {
+        gateway: { open: () => ({ device, streams: createStreams(() => undefined) }) },
+        createAppPreparer: () => preparer,
+      },
     )
 
     await executor.execute()
@@ -457,8 +662,10 @@ describe('AdbRunExecutor cross-module seam', () => {
     const executor = new AdbRunExecutor(
       database, carrierExecution, createMediaChecker(), appConfig, runner,
       {
-        createDevice: () => new FakeDevice(() => undefined),
-        createStreams: () => createStreams(() => undefined),
+        gateway: { open: () => ({
+          device: new FakeDevice(() => undefined),
+          streams: createStreams(() => undefined),
+        }) },
         createAppPreparer: () => preparer,
         createProtocolExecutor: () => ({
           async execute(context) {
@@ -499,5 +706,126 @@ describe('AdbRunExecutor cross-module seam', () => {
       expect.objectContaining({ status: 'passed', attempts: [expect.objectContaining({ attemptNumber: 1, status: 'passed' })], primaryOutput: expect.any(Object) }),
     ])
   }, 15_000)
+
+  it('stops a stale network Attempt before APK preparation and retries with the current generation', async () => {
+    const { database, execution, root } = await createHarness()
+    const endpoint = database.upsertDeviceEndpoint({
+      deviceId: execution.deviceId,
+      kind: 'network',
+      adbSerial: '192.0.2.40:5555',
+      host: '192.0.2.40',
+      port: 5555,
+      status: 'online',
+    })
+    expect(database.assignDeviceRunEndpoint({
+      taskId: execution.taskId,
+      runId: execution.runId,
+      deviceId: execution.deviceId,
+    }, {
+      endpointId: endpoint.id,
+      connectionKind: 'network',
+      adbSerial: endpoint.adbSerial,
+    })).toBe(true)
+    const firstConnection = database.beginDeviceConnectionOperation({
+      deviceId: execution.deviceId,
+      operationId: 'attempt-generation-1',
+      deadlineAt: '2099-01-01T00:00:00.000Z',
+    })
+    expect(database.commitDeviceConnectionOperation({
+      deviceId: execution.deviceId,
+      operationId: 'attempt-generation-1',
+      generation: firstConnection.connectionGeneration,
+      desiredState: 'connected',
+      observedState: 'online',
+      activeEndpointId: endpoint.id,
+    })).toBe(true)
+
+    const networkExecution = database.getDeviceRunExecution(execution.taskId, execution.runId)!
+    const appConfig: AppConfig = {
+      ...defaultConfig,
+      rootDir: root,
+      adbPath: 'adb',
+      tasksDir: path.join(root, 'tasks'),
+      dataDir: root,
+      databasePath: path.join(root, 'cloud-test.sqlite'),
+      minFreeDiskBytes: 1,
+      pollIntervalMs: 1,
+    }
+    const runner: ProcessRunner = { async run() { return result() } }
+    let generationAdvanced = false
+    let preparationCount = 0
+    let protocolExecutionCount = 0
+    const executor = new AdbRunExecutor(
+      database, networkExecution, createMediaChecker(), appConfig, runner,
+      {
+        gateway: { open: () => ({
+          device: new FakeDevice(() => undefined),
+          streams: createStreams(() => undefined),
+        }) },
+        createAppPreparer: () => ({
+          async prepareApplication() {
+            preparationCount += 1
+            return preparer.prepareApplication()
+          },
+        }),
+        createProtocolExecutor: () => ({
+          async execute(context) {
+            protocolExecutionCount += 1
+            await mkdir(context.local.runDirectory, { recursive: true })
+            await writeFile(context.local.outputPath, 'current-generation-output')
+            return {
+              inputSizeBytes: 11,
+              outputSizeBytes: 25,
+              outputSha256: 'current-generation-sha',
+              remoteOutputFile: context.paths.remoteOutputFile,
+            }
+          },
+        }),
+        readSourceIdentity: async () => {
+          if (!generationAdvanced) {
+            generationAdvanced = true
+            const current = database.beginDeviceConnectionOperation({
+              deviceId: execution.deviceId,
+              operationId: 'attempt-generation-2',
+              deadlineAt: '2099-01-01T00:00:00.000Z',
+            })
+            expect(database.commitDeviceConnectionOperation({
+              deviceId: execution.deviceId,
+              operationId: 'attempt-generation-2',
+              generation: current.connectionGeneration,
+              desiredState: 'connected',
+              observedState: 'online',
+              activeEndpointId: endpoint.id,
+            })).toBe(true)
+          }
+          return { commitSha: 'generation-fence-sha', dirty: false }
+        },
+        recoverExecution: async () => database.getDeviceRunExecution(execution.taskId, execution.runId),
+      },
+    )
+
+    await executor.execute()
+
+    const task = database.getTask(execution.taskId)!
+    const video = task.videos[0]!
+    expect(task.videoRuns[video.id][execution.deviceId]).toMatchObject({
+      status: 'passed',
+      attempts: [
+        expect.objectContaining({
+          attemptNumber: 1,
+          status: 'blocked',
+          failureCode: 'STALE_DEVICE_LEASE',
+          endpointGeneration: firstConnection.connectionGeneration,
+        }),
+        expect.objectContaining({
+          attemptNumber: 2,
+          status: 'passed',
+          endpointGeneration: firstConnection.connectionGeneration + 1,
+        }),
+      ],
+    })
+    expect(preparationCount).toBe(1)
+    expect(protocolExecutionCount).toBe(1)
+  })
 
 })

@@ -20,7 +20,8 @@
     "restore:data": "node scripts/restore-cloud-test-data.mjs",
     "report:orphans": "node scripts/report-orphan-artifacts.mjs",
     "dev:web:mock": "VITE_PLATFORM_MODE=mock vite --host 127.0.0.1",
-    "gate:android:installed": "node scripts/run-installed-android-protocol-gate.mjs"
+    "gate:android:installed": "node scripts/run-installed-android-protocol-gate.mjs",
+    "evidence:network": "node scripts/capture-network-evidence.mjs"
   },
   "dependencies": {
     "@ant-design/icons": "^6.0.0",

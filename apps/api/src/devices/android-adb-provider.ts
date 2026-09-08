@@ -1,4 +1,5 @@
 import { config } from '../config.js'
+import { connect as openTcpConnection } from 'node:net'
 import { ProcessError, runProcess, type ProcessResult, type RunProcessOptions } from '../process.js'
 import type { DeviceDiscoveryCandidate, DeviceConnectionStatus } from '../types.js'
 import type { DeviceDiscoveryProvider } from './device-provider.js'
@@ -52,12 +53,44 @@ function first(values: Map<string, string>, ...keys: string[]) {
   return keys.map((key) => values.get(key)?.trim()).find(Boolean)
 }
 
+function networkEndpointFromSerial(serial: string) {
+  const ipv6 = serial.match(/^\[([^\]]+)\]:(\d+)$/)
+  if (ipv6) return { host: ipv6[1]!, port: Number(ipv6[2]) }
+  const ipv4OrHost = serial.match(/^([^:]+):(\d+)$/)
+  if (!ipv4OrHost) return undefined
+  const port = Number(ipv4OrHost[2])
+  return Number.isInteger(port) && port > 0 && port <= 65535
+    ? { host: ipv4OrHost[1]!, port }
+    : undefined
+}
 
-export function parseAdbMdnsServices(output: string): Array<{ host: string; port: number; serial: string }> {
+async function waitForMdnsRetry(signal?: AbortSignal) {
+  await new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason)
+      return
+    }
+    const timer = setTimeout(resolve, 200)
+    signal?.addEventListener('abort', () => {
+      clearTimeout(timer)
+      reject(signal.reason)
+    }, { once: true })
+  })
+}
+
+
+export function parseAdbMdnsServices(output: string): Array<{
+  serviceInstance: string
+  transportType: 'tcp_legacy' | 'wireless_tls'
+  host: string
+  port: number
+  serial: string
+}> {
   return output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).flatMap((line) => {
     if (/^List of discovered services/i.test(line) || /^adb\s+mdns/i.test(line)) return []
-    if (/_adb-tls-pairing\._tcp/i.test(line)) return []
-    if (line.includes('_adb-') && !/_adb-tls-connect\._tcp/i.test(line)) return []
+    const service = line.match(/^(\S+)\s+(_adb(?:-[A-Za-z0-9-]+)?\._tcp\.?)\s+/i)
+    const serviceType = service?.[2]?.toLowerCase().replace(/\.$/, '')
+    if (serviceType && serviceType !== '_adb._tcp' && serviceType !== '_adb-tls-connect._tcp') return []
     const matches = [...line.matchAll(/(\[[^\]]+\]|(?:[A-Za-z0-9_-]+\.)*[A-Za-z0-9_-]+|\d{1,3}(?:\.\d{1,3}){3}):(\d{1,5})(?=\s|$)/g)]
     const match = matches.at(-1)
     if (!match) return []
@@ -65,7 +98,44 @@ export function parseAdbMdnsServices(output: string): Array<{ host: string; port
     const port = Number(match[2])
     if (!Number.isInteger(port) || port < 1 || port > 65535) return []
     const serial = host.includes(':') ? `[${host}]:${port}` : `${host}:${port}`
-    return [{ host, port, serial }]
+    const serviceInstance = service?.[1] ?? serial
+    // The service type is authoritative for Wireless TLS. An untyped mDNS
+    // line is only safe to treat as legacy ADB when it uses the well-known
+    // 5555 port; never infer tcp_legacy for a dynamic port.
+    const transportType = serviceType === '_adb-tls-connect._tcp'
+      ? 'wireless_tls' as const
+      : serviceType === '_adb._tcp' || (!serviceType && port === 5555)
+        ? 'tcp_legacy' as const
+        : undefined
+    if (!transportType) return []
+    return [{ serviceInstance, transportType, host, port, serial }]
+  })
+}
+
+/**
+ * Pairing advertisements are deliberately kept separate from connect
+ * services.  A pairing endpoint is only a signal that user/MDM provisioning
+ * may be required; it is never a runnable ADB endpoint and must not enter the
+ * normal EndpointObservation adoption path.
+ */
+export interface AdbMdnsPairingCandidate {
+  serviceInstance: string
+  host: string
+  port: number
+}
+
+export function parseAdbMdnsPairingServices(output: string): AdbMdnsPairingCandidate[] {
+  return output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).flatMap((line) => {
+    if (/^List of discovered services/i.test(line) || /^adb\s+mdns/i.test(line)) return []
+    const service = line.match(/^(\S+)\s+_adb-tls-pairing\._tcp\.?\s+/i)
+    if (!service) return []
+    const matches = [...line.matchAll(/(\[[^\]]+\]|(?:[A-Za-z0-9_-]+\.)*[A-Za-z0-9_-]+|\d{1,3}(?:\.\d{1,3}){3}):(\d{1,5})(?=\s|$)/g)]
+    const match = matches.at(-1)
+    if (!match) return []
+    const host = match[1]!.replace(/^\[|\]$/g, '')
+    const port = Number(match[2])
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return []
+    return [{ serviceInstance: service[1]!, host, port }]
   })
 }
 
@@ -77,22 +147,133 @@ export class AndroidAdbDeviceProvider implements DeviceDiscoveryProvider {
     private readonly execute: AdbCommandExecutor = runProcess,
   ) {}
 
-  async discover(): Promise<DeviceDiscoveryCandidate[]> {
-    const listed = await this.execute(this.adbPath, ['devices', '-l'], { timeoutMs: 10_000 })
-    const entries = parseAdbDevices(listed.stdout)
-    return Promise.all(entries.map((entry) => this.describe(entry)))
+  private async discoverMdnsServices(signal?: AbortSignal) {
+    let lastError: unknown
+    // mDNS responses can be empty while the daemon refreshes its service
+    // cache. A single short retry avoids dropping a valid TLS service without
+    // extending the overall discovery budget beyond the 5 second bound.
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const result = await this.execute(this.adbPath, ['mdns', 'services'], {
+          timeoutMs: 2_000,
+          signal,
+        })
+        const services = parseAdbMdnsServices(result.stdout)
+        if (services.length > 0 || attempt === 1) return services
+        await waitForMdnsRetry(signal)
+      } catch (error) {
+        lastError = error
+        if (attempt === 1) throw error
+        await waitForMdnsRetry(signal)
+      }
+    }
+    if (lastError) throw lastError
+    return []
   }
 
-  async discoverNetwork(): Promise<DeviceDiscoveryCandidate[]> {
-    try {
-      const result = await this.execute(this.adbPath, ['mdns', 'services'], { timeoutMs: 10_000 })
-      return parseAdbMdnsServices(result.stdout).map((service) => ({
-        serial: service.serial, platform: 'android' as const, host: service.host, port: service.port,
-        name: `${service.host}:${service.port}`, connectionStatus: 'unknown' as const,
-      }))
-    } catch {
-      return []
+  async discover(options: { signal?: AbortSignal } = {}): Promise<DeviceDiscoveryCandidate[]> {
+    const listed = await this.execute(this.adbPath, ['devices', '-l'], {
+      timeoutMs: 10_000,
+      signal: options.signal,
+    })
+    const entries = parseAdbDevices(listed.stdout)
+    return Promise.all(entries.map((entry) => this.describe(entry, options.signal)))
+  }
+
+  async discoverNetwork(options: { signal?: AbortSignal } = {}): Promise<DeviceDiscoveryCandidate[]> {
+    // mDNS and the current ADB transport list are independent observations.
+    // Run them concurrently so a slow/unavailable mDNS responder cannot add
+    // its timeout on top of the normal `adb devices` scan.
+    const [mdnsResult, devicesResult] = await Promise.allSettled([
+      this.discoverMdnsServices(options.signal),
+      this.execute(this.adbPath, ['devices', '-l'], {
+        timeoutMs: 10_000,
+        signal: options.signal,
+      }),
+    ])
+    if (devicesResult.status === 'rejected') {
+      throw mdnsResult.status === 'rejected' ? mdnsResult.reason : devicesResult.reason
     }
+    const mdnsServices = mdnsResult.status === 'fulfilled'
+      ? mdnsResult.value
+      : []
+    const listed = parseAdbDevices(devicesResult.value.stdout)
+
+    const byEndpoint = new Map<string, DeviceDiscoveryCandidate>()
+    for (const service of mdnsServices) {
+      byEndpoint.set(service.serial, {
+        serial: service.serial,
+        platform: 'android',
+        host: service.host,
+        port: service.port,
+        serviceInstance: service.serviceInstance,
+        networkTransport: service.transportType,
+        name: `${service.host}:${service.port}`,
+        connectionStatus: 'unknown',
+      })
+    }
+
+    const connectedNetworkEntries = listed
+      .map((entry) => ({ entry, endpoint: networkEndpointFromSerial(entry.serial) }))
+      .filter((item): item is { entry: AdbListEntry; endpoint: { host: string; port: number } } => Boolean(item.endpoint))
+    const described = await Promise.all(connectedNetworkEntries.map(async ({ entry, endpoint }) => {
+      const serial = entry.serial
+      const existing = byEndpoint.get(serial)
+      const candidate = await this.describe(entry, options.signal, true)
+      return {
+        ...existing,
+        ...candidate,
+        serial,
+        host: endpoint.host,
+        port: endpoint.port,
+        serviceInstance: existing?.serviceInstance ?? serial,
+        // ADB track-devices exposes only host:port. A non-5555 port has no
+        // transport identity on its own, so do not manufacture a legacy TCP
+        // candidate when the matching mDNS TLS observation is absent.
+        // Keeping this candidate out is safer than persisting a dynamic TLS
+        // port as tcp_legacy and later reconnecting through the wrong policy.
+        networkTransport: existing?.networkTransport ?? (endpoint.port === 5555
+          ? 'tcp_legacy' as const
+          : undefined),
+        name: candidate.name ?? existing?.name ?? serial,
+      }
+    }))
+    for (const candidate of described) {
+      // Only return a connected network transport when its type is known.
+      // Non-5555 ports are commonly Wireless TLS dynamic ports, but track-
+      // devices cannot prove that; mDNS must supply the authoritative type.
+      if (candidate.networkTransport) byEndpoint.set(candidate.serial, candidate)
+    }
+    return [...byEndpoint.values()]
+  }
+
+  async discoverPairingCandidates(options: { signal?: AbortSignal } = {}): Promise<AdbMdnsPairingCandidate[]> {
+    const result = await this.execute(this.adbPath, ['mdns', 'services'], {
+      timeoutMs: 5_000,
+      signal: options.signal,
+    })
+    return parseAdbMdnsPairingServices(result.stdout)
+  }
+
+  async probeNetwork(host: string, port: number, options: { signal?: AbortSignal } = {}): Promise<boolean> {
+    return await new Promise<boolean>((resolve) => {
+      let settled = false
+      const socket = openTcpConnection({ host: host.replace(/^\[|\]$/g, ''), port })
+      const finish = (reachable: boolean) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        options.signal?.removeEventListener('abort', onAbort)
+        socket.destroy()
+        resolve(reachable)
+      }
+      const onAbort = () => finish(false)
+      const timer = setTimeout(() => finish(false), 2_000)
+      socket.once('connect', () => finish(true))
+      socket.once('error', () => finish(false))
+      options.signal?.addEventListener('abort', onAbort, { once: true })
+      if (options.signal?.aborted) onAbort()
+    })
   }
 
   async connectNetwork(host: string, port: number, options: { signal?: AbortSignal } = {}): Promise<DeviceDiscoveryCandidate> {

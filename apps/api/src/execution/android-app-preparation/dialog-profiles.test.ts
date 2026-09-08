@@ -98,6 +98,36 @@ describe('strict Android system dialog profiles', () => {
     expect(match).toBeUndefined()
   })
 
+  it('只在 ColorOS 安装完成页点击明确的“完成”按钮', () => {
+    const match = matchDialogAction(['oplus-package-installer-finish-v1'], {
+      manufacturer: 'OPPO', deviceModel: 'PJV110', packageName: 'com.morphoinc.videopostprocessor',
+      applicationLabel: 'Morpho VideoStabilizer', phase: 'install',
+      focusedWindowPackage: 'com.oplus.appdetail',
+      focusedWindowComponent: 'com.oplus.appdetail/com.oplus.appdetail.model.finish.InstallFinishActivity',
+      nodes: [
+        { index: 0, packageName: 'com.oplus.appdetail', className: 'android.widget.TextView', resourceId: 'com.oplus.appdetail:id/process_finish_title', text: '安装完成', contentDescription: '', clickable: false, enabled: true, focusable: false, focused: false, scrollable: false, longClickable: false, password: false, selected: false, checkable: false, checked: false },
+        { index: 1, packageName: 'com.oplus.appdetail', className: 'android.widget.Button', resourceId: 'com.oplus.appdetail:id/launch_button', text: '完成', contentDescription: '', clickable: true, enabled: true, focusable: true, focused: false, scrollable: false, longClickable: false, password: false, selected: false, checkable: false, checked: false, bounds: { left: 72, top: 2124, right: 996, bottom: 2256 } },
+        { index: 2, packageName: 'com.oplus.appdetail', className: 'android.widget.TextView', resourceId: 'com.oplus.appdetail:id/app_name', text: 'Morpho VideoStabilizer', contentDescription: '', clickable: false, enabled: true, focusable: false, focused: false, scrollable: false, longClickable: false, password: false, selected: false, checkable: false, checked: false },
+      ],
+    })
+    expect(match).toMatchObject({ profileId: 'oplus-package-installer-finish-v1', action: 'continue-install' })
+  })
+
+  it('匹配新版 ColorOS 风险页（缺少 legacy risk 节点）但不放宽窗口和资源约束', () => {
+    const nodes = [
+      { index: 0, packageName: 'com.oplus.appdetail', className: 'android.widget.TextView', resourceId: 'com.oplus.appdetail:id/app_name', text: 'Morpho VideoStabilizer', contentDescription: '', clickable: false, enabled: true, checkable: false, checked: false },
+      { index: 1, packageName: 'com.oplus.appdetail', className: 'android.widget.TextView', resourceId: 'com.oplus.appdetail:id/tv_result_title', text: '检测结果：涉及敏感权限', contentDescription: '', clickable: false, enabled: true, checkable: false, checked: false },
+      { index: 2, packageName: 'com.oplus.appdetail', className: 'android.widget.TextView', resourceId: 'com.oplus.appdetail:id/tv_result_desc', text: '此应用可能申请使用了 4 项敏感权限，安装后请注意权限授予和隐私管控。详情', contentDescription: '', clickable: false, enabled: true, checkable: false, checked: false },
+      { index: 3, packageName: 'com.oplus.appdetail', className: 'android.widget.Button', resourceId: 'com.oplus.appdetail:id/btn_left', text: '继续安装', contentDescription: '', clickable: true, enabled: true, checkable: false, checked: false, bounds: { left: 72, top: 2160, right: 528, bottom: 2292 } },
+    ]
+    const match = matchDialogAction(['oplus-package-installer-risk-v2'], {
+      manufacturer: 'OPPO', packageName: 'com.morphoinc.videopostprocessor', applicationLabel: 'Morpho VideoStabilizer',
+      focusedWindowPackage: 'com.oplus.appdetail', focusedWindowComponent: 'com.oplus.appdetail/com.oplus.appdetail.model.guide.ui.InstallGuideActivity', phase: 'install', nodes,
+    })
+    expect(match?.profileId).toBe('oplus-package-installer-risk-v2')
+    expect(match?.node.resourceId).toBe('com.oplus.appdetail:id/btn_left')
+  })
+
   it('requires the verified OPlus resource-id set instead of matching generic risk text alone', () => {
     const incompleteXml = fixture('pkr110-oplus-install-guide.xml')
       .replaceAll('com.oplus.appdetail:id/tv_result_desc', 'com.oplus.appdetail:id/unknown_result_desc')

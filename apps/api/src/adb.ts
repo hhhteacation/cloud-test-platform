@@ -19,14 +19,18 @@ import {
   writeAttemptManifest,
   type SourceIdentity,
 } from './execution/attempt-manifest.js'
-import { AdbDeviceClient } from './execution/adb-client.js'
-import { AdbStreams } from './execution/adb-streams.js'
+import {
+  DefaultAdbExecutionGateway,
+  type AdbExecutionConnectionHealthEvidence,
+  type AdbExecutionDevice,
+  type AdbExecutionGateway,
+  type AdbExecutionStreams,
+} from './execution/adb-gateway.js'
 import { AttemptEvidenceRecorder } from './execution/attempt-evidence-recorder.js'
+import { delay as abortableDelay } from './execution/file-utils.js'
 import { TaskProcessRegistry } from './execution/process-registry.js'
 import { createProtocolExecutor } from './execution/protocol-executor-factory.js'
 import type {
-  ProtocolExecutionDevice,
-  ProtocolExecutionStreams,
   ProtocolExecutor,
   ProtocolExecutorDependencies,
 } from './execution/protocol-executor.js'
@@ -35,7 +39,7 @@ import {
   type AndroidAppPreparer,
 } from './execution/android-app-preparation/index.js'
 import { AndroidDeviceReadiness } from './execution/android-app-preparation/device-readiness.js'
-import type { DeviceRunPhase } from './types.js'
+import type { DeviceRunPhase, VideoRunAttemptView } from './types.js'
 
 export { parseCarrierResult } from './execution/carrier-protocol-executor.js'
 
@@ -50,7 +54,11 @@ export class AdbWorker {
       maxOutputBytes: appConfig.maxProcessOutputBytes,
       killGraceMs: appConfig.processKillGraceMs,
     }),
-    private readonly recoverExecution?: (job: DeviceRunJob) => Promise<DeviceRunExecution | undefined>,
+    private readonly recoverExecution?: (
+      job: DeviceRunJob,
+      context: AdbConnectionRecoveryContext,
+    ) => Promise<DeviceRunExecution | undefined>,
+    private readonly recordConnectionHealth?: (input: AdbExecutionConnectionHealthEvidence) => void,
   ) {}
 
   async execute(job: DeviceRunJob) {
@@ -63,7 +71,12 @@ export class AdbWorker {
 
     const runner = new AdbRunExecutor(
       this.database, execution, this.mediaIntegrityChecker, this.appConfig, this.processRunner,
-      { recoverExecution: this.recoverExecution ? () => this.recoverExecution!(job) : undefined },
+      {
+        recoverExecution: this.recoverExecution
+          ? (context) => this.recoverExecution!(job, context)
+          : undefined,
+        recordConnectionHealth: this.recordConnectionHealth,
+      },
     )
     this.active.set(job.runId, runner)
     try {
@@ -80,25 +93,40 @@ export class AdbWorker {
   }
 }
 
-export interface AdbExecutionDevice extends ProtocolExecutionDevice {
-  connectionStatus(): Promise<'online' | 'offline' | 'unauthorized'>
-  isPackageInstalled(packageName: string, signal: AbortSignal): Promise<boolean>
-}
-
-export interface AdbExecutionStreams extends ProtocolExecutionStreams {
-  captureScreenshot(taskId: string, targetPath: string, signal: AbortSignal): Promise<void>
-}
+export type {
+  AdbExecutionConnectionHealthEvidence,
+  AdbExecutionDevice,
+  AdbExecutionStreams,
+} from './execution/adb-gateway.js'
 
 export interface AdbRunExecutorDependencies {
-  createDevice?: (adbPath: string, serial: string, runner: ProcessRunner) => AdbExecutionDevice
-  createStreams?: (adbPath: string, serial: string, processes: TaskProcessRegistry, options: { maxLogBytes: number; killGraceMs: number }) => AdbExecutionStreams
+  gateway?: AdbExecutionGateway
   createAppPreparer?: (device: AdbExecutionDevice, captureScreenshot: (targetPath: string, signal: AbortSignal) => Promise<void>) => AndroidAppPreparer
   createProtocolExecutor?: (
     dependencies: ProtocolExecutorDependencies,
   ) => ProtocolExecutor
   readSourceIdentity?: () => Promise<SourceIdentity>
-  recoverExecution?: () => Promise<DeviceRunExecution | undefined>
+  recoverExecution?: (context: AdbConnectionRecoveryContext) => Promise<DeviceRunExecution | undefined>
+  recordConnectionHealth?: (input: AdbExecutionConnectionHealthEvidence) => void
   now?: () => Date
+}
+
+export interface AdbConnectionRecoveryContext {
+  signal: AbortSignal
+  deadlineAt: string
+}
+
+type AdbConnectionRecoveryResult =
+  | { status: 'recovered' }
+  | { status: 'unavailable'; failureCode: 'CONNECTION_RECOVERY_UNAVAILABLE' }
+  | { status: 'cancelled'; failureCode: 'TASK_CANCELLED' }
+  | { status: 'deadline_exceeded'; failureCode: 'CONNECTION_RECOVERY_DEADLINE_EXCEEDED' }
+
+class AdbConnectionRecoveryDeadlineError extends Error {
+  constructor() {
+    super('Attempt 间设备连接恢复超过 deadline')
+    this.name = 'AdbConnectionRecoveryDeadlineError'
+  }
 }
 
 interface VideoAttemptOutcome {
@@ -116,6 +144,8 @@ export class AdbRunExecutor {
   private streams!: AdbExecutionStreams
   private appPreparer!: AndroidAppPreparer
   private activeExecutionKey?: string
+  private recoveryController?: AbortController
+  private readonly gateway: AdbExecutionGateway
 
   constructor(
     private readonly database: PlatformDatabase,
@@ -129,24 +159,55 @@ export class AdbRunExecutor {
     this.taskId = execution.taskId
     this.runId = execution.runId
     this.processes = new TaskProcessRegistry(appConfig.processKillGraceMs)
+    this.gateway = dependencies.gateway ?? new DefaultAdbExecutionGateway(
+      appConfig.adbPath,
+      processRunner,
+      appConfig,
+      dependencies.recordConnectionHealth,
+    )
     this.bindRuntime(execution)
   }
 
   private bindRuntime(execution: DeviceRunExecution) {
+    if (!execution.endpointId || !execution.connectionKind || !execution.deviceSerial) {
+      throw new Error(`设备执行缺少完整 Actual Connection：${execution.runId}`)
+    }
     this.execution = execution
-    this.device = this.dependencies.createDevice?.(this.appConfig.adbPath, execution.deviceSerial, this.processRunner)
-      ?? new AdbDeviceClient(this.appConfig.adbPath, execution.deviceSerial, this.processRunner)
-    this.streams = this.dependencies.createStreams?.(
-      this.appConfig.adbPath,
-      execution.deviceSerial,
-      this.processes,
-      { maxLogBytes: this.appConfig.maxLogcatBytes, killGraceMs: this.appConfig.processKillGraceMs },
-    ) ?? new AdbStreams(
-      this.appConfig.adbPath,
-      execution.deviceSerial,
-      this.processes,
-      { maxLogBytes: this.appConfig.maxLogcatBytes, killGraceMs: this.appConfig.processKillGraceMs },
-    )
+  }
+
+  private openAttemptSession(
+    execution: DeviceRunExecution,
+    attempt: VideoRunAttemptView,
+    signal: AbortSignal,
+    deadlineAt: string,
+  ) {
+    if (!attempt.endpointId || !attempt.connectionKind || !attempt.adbSerial) {
+      throw new Error(`Attempt 缺少完整 Actual Connection：${attempt.id}`)
+    }
+    const connectionState = this.database.getDeviceConnectionState(execution.deviceId)
+    const healthSnapshot = attempt.connectionKind === 'network'
+      && connectionState?.activeEndpointId === attempt.endpointId
+      && connectionState.connectionGeneration === attempt.endpointGeneration
+      ? {
+          deviceId: execution.deviceId,
+          endpointId: attempt.endpointId,
+          generation: attempt.endpointGeneration,
+        }
+      : undefined
+    const session = this.gateway.open({
+      connection: {
+        deviceId: execution.deviceId,
+        endpointId: attempt.endpointId,
+        kind: attempt.connectionKind,
+        adbSerial: attempt.adbSerial,
+        generation: attempt.endpointGeneration,
+      },
+      processes: this.processes,
+      attempt: { signal, deadlineAt },
+      healthGeneration: healthSnapshot?.generation,
+    })
+    this.device = session.device
+    this.streams = session.streams
     this.appPreparer = this.dependencies.createAppPreparer?.(
       this.device,
       (targetPath, signal) => this.streams.captureScreenshot(this.activeExecutionKey ?? this.runId, targetPath, signal),
@@ -161,6 +222,7 @@ export class AdbRunExecutor {
   }
 
   cancel() {
+    this.recoveryController?.abort(new TaskExecutionError('用户取消任务', 'TASK_CANCELLED'))
     const executionKey = this.activeExecutionKey ?? this.runId
     this.processes.abort(executionKey)
     this.processes.killChildren(executionKey)
@@ -179,22 +241,30 @@ export class AdbRunExecutor {
       if (this.database.isCancelled(this.taskId)) return
       let attemptNumber = 0
       while (attemptNumber < 2) {
+        if (this.database.isCancelled(this.taskId)) return
         attemptNumber += 1
         const attemptDirectory = this.localAttemptDirectory(video, attemptNumber)
         const attempt = this.database.createVideoAttempt(video.videoRunResultId, {
           evidenceDirectory: attemptDirectory,
         })
-        const outcome = await this.executeVideoAttempt(video, attempt.id, attempt.attemptNumber, attemptDirectory)
+        const outcome = await this.executeVideoAttempt(video, attempt, attemptDirectory)
         if (outcome.cancelled) return
         if (outcome.passed) {
           this.database.finishVideoAttempt(attempt.id, { status: 'passed' })
           break
         }
 
-        this.database.finishVideoAttempt(attempt.id, { status: 'failed', failure: outcome.failure })
-        if (outcome.failure?.code === 'UNSUPPORTED_APK_PROTOCOL') return
-        if (!outcome.failure || !this.isRecoverableInfrastructureFailure(outcome.failure)) break
+        if (outcome.failure?.code === 'UNSUPPORTED_APK_PROTOCOL') {
+          this.database.finishVideoAttempt(attempt.id, { status: 'failed', failure: outcome.failure })
+          return
+        }
+        if (!outcome.failure || !this.isRecoverableInfrastructureFailure(outcome.failure)) {
+          this.database.finishVideoAttempt(attempt.id, { status: 'failed', failure: outcome.failure })
+          break
+        }
         if (attemptNumber >= 2) {
+          this.finalizeRecoverableFailure(video, attempt.id, outcome.failure)
+          this.database.finishVideoAttempt(attempt.id, { status: 'failed', failure: outcome.failure })
           this.blockLaterVideos(video, outcome.failure)
           return
         }
@@ -206,13 +276,42 @@ export class AdbRunExecutor {
           `${outcome.failure.code}：准备恢复设备连接并重试当前视频（最多一次）`,
           'warning',
         )
-        const recovered = await this.recoverConnection()
-        if (!recovered) {
+        const recovery = await this.recoverConnection()
+        if (this.database.isCancelled(this.taskId)) return
+        if (recovery.status !== 'recovered') {
+          this.database.addVideoLog(
+            this.taskId,
+            this.runId,
+            video.videoRunResultId,
+            `${recovery.failureCode}：设备连接恢复未完成，当前视频不再重试`,
+            'error',
+          )
+          this.finalizeRecoverableFailure(video, attempt.id, outcome.failure)
+          this.database.finishVideoAttempt(attempt.id, { status: 'failed', failure: outcome.failure })
           this.blockLaterVideos(video, outcome.failure)
           return
         }
+        this.database.finishVideoAttempt(attempt.id, { status: 'failed', failure: outcome.failure })
       }
     }
+  }
+
+  private finalizeRecoverableFailure(
+    video: VideoRunExecution,
+    attemptId: string,
+    failure: ExecutionFailure,
+  ) {
+    this.database.setVideoExecutionState({
+      videoRunResultId: video.videoRunResultId,
+      attemptId,
+      runStatus: 'failed',
+      phase: failure.phase,
+      progress: 100,
+      finished: true,
+      failure,
+      executionStatus: 'failed',
+      executionFailureCode: failure.code,
+    })
   }
 
   private localAttemptDirectory(video: VideoRunExecution, attemptNumber: number) {
@@ -241,53 +340,122 @@ export class AdbRunExecutor {
       || (failure.category === 'device' && failure.retryability === 'safe')
   }
 
-  private async recoverConnection() {
+  private async recoverConnection(): Promise<AdbConnectionRecoveryResult> {
+    const controller = new AbortController()
+    this.recoveryController = controller
+    const deadlineMs = this.appConfig.attemptRecoveryDeadlineMs
+    const deadlineAt = new Date(Date.now() + deadlineMs).toISOString()
+    const timer = setTimeout(() => {
+      controller.abort(new AdbConnectionRecoveryDeadlineError())
+    }, deadlineMs)
+    timer.unref()
+    const cancellation = new Promise<AdbConnectionRecoveryResult>((resolve) => {
+      const onAbort = () => resolve(
+        controller.signal.reason instanceof AdbConnectionRecoveryDeadlineError
+          ? { status: 'deadline_exceeded', failureCode: 'CONNECTION_RECOVERY_DEADLINE_EXCEEDED' }
+          : { status: 'cancelled', failureCode: 'TASK_CANCELLED' },
+      )
+      controller.signal.addEventListener('abort', onAbort, { once: true })
+    })
+    const operation = this.runConnectionRecovery({ signal: controller.signal, deadlineAt })
     try {
-      const refreshed = await this.dependencies.recoverExecution?.()
+      const result = await Promise.race([operation, cancellation])
+      if (result.status === 'deadline_exceeded') {
+        this.database.addLog(
+          this.taskId,
+          this.runId,
+          `设备连接恢复超过 ${deadlineMs}ms 预算`,
+          'error',
+        )
+      }
+      return result
+    } finally {
+      clearTimeout(timer)
+      if (this.recoveryController === controller) this.recoveryController = undefined
+    }
+  }
+
+  private async runConnectionRecovery(
+    context: AdbConnectionRecoveryContext,
+  ): Promise<AdbConnectionRecoveryResult> {
+    try {
+      const refreshed = await this.dependencies.recoverExecution?.(context)
+      if (context.signal.aborted) {
+        return context.signal.reason instanceof AdbConnectionRecoveryDeadlineError
+          ? { status: 'deadline_exceeded', failureCode: 'CONNECTION_RECOVERY_DEADLINE_EXCEEDED' }
+          : { status: 'cancelled', failureCode: 'TASK_CANCELLED' }
+      }
       if (refreshed?.endpointId && refreshed.connectionKind && refreshed.deviceSerial) {
         this.bindRuntime(refreshed)
-        return true
+        return { status: 'recovered' }
       }
-      await new Promise((resolve) => setTimeout(resolve, 500))
-      return await this.device.connectionStatus() === 'online'
+      await abortableDelay(500, context.signal)
+      const online = await this.device.connectionStatus(context.signal) === 'online'
+      return online
+        ? { status: 'recovered' }
+        : { status: 'unavailable', failureCode: 'CONNECTION_RECOVERY_UNAVAILABLE' }
     } catch (error) {
+      if (context.signal.aborted) {
+        return context.signal.reason instanceof AdbConnectionRecoveryDeadlineError
+          ? { status: 'deadline_exceeded', failureCode: 'CONNECTION_RECOVERY_DEADLINE_EXCEEDED' }
+          : { status: 'cancelled', failureCode: 'TASK_CANCELLED' }
+      }
       this.database.addLog(
         this.taskId,
         this.runId,
         `设备连接恢复失败：${error instanceof Error ? error.message : String(error)}`,
         'error',
       )
-      return false
+      return { status: 'unavailable', failureCode: 'CONNECTION_RECOVERY_UNAVAILABLE' }
     }
   }
 
   private async executeVideoAttempt(
     video: VideoRunExecution,
-    attemptId: string,
-    attemptNumber: number,
+    attempt: VideoRunAttemptView,
     localRunDir: string,
   ): Promise<VideoAttemptOutcome> {
     const execution = this.execution
     const { taskId, runId } = execution
+    const { id: attemptId, attemptNumber } = attempt
+    const attemptStartedAt = this.dependencies.now?.() ?? new Date()
+    const deadlineAt = new Date(
+      attemptStartedAt.getTime() + execution.timeoutSeconds * 1_000,
+    ).toISOString()
+    const controller = new AbortController()
+    const signal = controller.signal
+    const deadlineTimer = setTimeout(() => {
+      controller.abort(new TaskExecutionError(
+        `Attempt 超过全局执行预算 ${execution.timeoutSeconds} 秒`,
+        'TASK_TIMEOUT',
+      ))
+    }, execution.timeoutSeconds * 1_000)
+    deadlineTimer.unref()
     const protocol = findApkExecutionProtocol(execution.apkPackageName)
     let currentPhase: DeviceRunPhase = 'validating_device'
     const manifestAttemptId = execution.videos.length === 1 && attemptNumber === 1 ? runId : attemptId
     const attemptManifestPath = path.join(localRunDir, 'attempt-manifest.json')
     const deviceSnapshotPath = path.join(localRunDir, 'device-snapshot.json')
-    let attemptManifest = await buildAttemptManifest({
-      attemptId: manifestAttemptId,
-      deviceSerial: execution.deviceSerial,
-      deviceName: execution.deviceName,
-      protocolId: protocol?.id ?? 'unsupported',
-      profileVersion: ANDROID_DIALOG_PROFILE_VERSION,
-      inputPath: video.videoPath,
-      evidenceDirectory: localRunDir,
-    }, {
-      now: this.dependencies.now,
-      readSourceIdentity: this.dependencies.readSourceIdentity
-        ?? (() => readSourceIdentity(this.appConfig.rootDir)),
-    })
-    await writeAttemptManifest(attemptManifestPath, attemptManifest)
+    let attemptManifest
+    try {
+      attemptManifest = await buildAttemptManifest({
+        attemptId: manifestAttemptId,
+        deviceSerial: execution.deviceSerial,
+        deviceName: execution.deviceName,
+        protocolId: protocol?.id ?? 'unsupported',
+        profileVersion: ANDROID_DIALOG_PROFILE_VERSION,
+        inputPath: video.videoPath,
+        evidenceDirectory: localRunDir,
+      }, {
+        now: this.dependencies.now,
+        readSourceIdentity: this.dependencies.readSourceIdentity
+          ?? (() => readSourceIdentity(this.appConfig.rootDir)),
+      })
+      await writeAttemptManifest(attemptManifestPath, attemptManifest)
+    } catch (error) {
+      clearTimeout(deadlineTimer)
+      throw error
+    }
 
     if (!protocol) {
       currentPhase = 'validating_apk'
@@ -299,18 +467,26 @@ export class AdbRunExecutor {
       })
       this.database.setVideoExecutionState({
         videoRunResultId: video.videoRunResultId,
+        attemptId,
         runStatus: 'failed', phase: currentPhase, progress: 100, finished: true,
         executionStatus: 'failed', executionFailureCode: failure.code, failure,
       })
       this.blockLaterVideos(video, failure)
+      clearTimeout(deadlineTimer)
       return { passed: false, cancelled: false, failure }
     }
 
-    const controller = new AbortController()
-    const signal = controller.signal
     const executionKey = attemptId
     this.activeExecutionKey = executionKey
     this.processes.begin(executionKey, controller, protocol.packageName)
+    try {
+      this.openAttemptSession(execution, attempt, signal, deadlineAt)
+    } catch (error) {
+      clearTimeout(deadlineTimer)
+      this.processes.clear(executionKey)
+      if (this.activeExecutionKey === executionKey) this.activeExecutionKey = undefined
+      throw error
+    }
 
     const localResult = path.join(localRunDir, 'result.json')
     const localOutput = path.join(localRunDir, 'output.mp4')
@@ -334,26 +510,35 @@ export class AdbRunExecutor {
 
     const update = (phase: DeviceRunPhase, progress: number, message: string) => {
       currentPhase = phase
-      this.database.setVideoExecutionState({
+      requireCurrentAttempt(this.database.setVideoExecutionState({
         videoRunResultId: video.videoRunResultId,
+        attemptId,
         runStatus: 'running', phase, progress,
-      })
+      }))
       this.database.addVideoLog(taskId, runId, video.videoRunResultId, message)
+    }
+    const requireCurrentAttempt = (written: boolean) => {
+      if (written) return
+      throw new TaskExecutionError(
+        'Attempt 的设备 Lease 或联网 Endpoint generation 已过期，已停止旧执行',
+        'STALE_DEVICE_LEASE',
+      )
     }
 
     try {
       await mkdir(screenshotDir, { recursive: true })
-      this.database.setVideoExecutionState({
+      requireCurrentAttempt(this.database.setVideoExecutionState({
         videoRunResultId: video.videoRunResultId,
+        attemptId,
         runStatus: 'running', phase: 'validating_device', progress: 2, started: true,
         executionStatus: 'running', executionFailureCode: null, failure: null,
-      })
+      }))
       this.database.addVideoLog(
         taskId, runId, video.videoRunResultId,
         `开始检查 ADB 真机连接；视频 ${video.sequence + 1}/${execution.videos.length}；执行协议：${protocol.name}`,
       )
 
-      const deviceStatus = await this.device.connectionStatus()
+      const deviceStatus = await this.device.connectionStatus(signal)
       const deviceSnapshot = await captureAndroidDeviceSnapshot(
         deviceStatus,
         (args) => this.device.observe(args, signal, 30_000),
@@ -459,11 +644,16 @@ export class AdbRunExecutor {
           addLog: (message, level = 'info') => this.database.addVideoLog(
             taskId, runId, video.videoRunResultId, message, level,
           ),
-          setProcessingProgress: (progress) => this.database.setVideoExecutionState({
-            videoRunResultId: video.videoRunResultId,
-            runStatus: 'running', phase: 'processing', progress,
-          }),
-          upsertCheck: (check) => this.database.upsertVideoCheck(runId, video.videoRunResultId, check),
+          setProcessingProgress: (progress) => requireCurrentAttempt(
+            this.database.setVideoExecutionState({
+              videoRunResultId: video.videoRunResultId,
+              attemptId,
+              runStatus: 'running', phase: 'processing', progress,
+            }),
+          ),
+          upsertCheck: (check) => requireCurrentAttempt(this.database.upsertVideoCheck(
+            runId, video.videoRunResultId, check, attemptId,
+          )),
           isCancelled: () => this.database.isCancelled(taskId),
         },
       })
@@ -472,38 +662,43 @@ export class AdbRunExecutor {
         `协议执行与输出回收耗时=${Date.now() - protocolStartedAt}ms`,
       )
 
-      this.database.addVideoOutput({
+      requireCurrentAttempt(Boolean(this.database.addVideoOutput({
         videoRunResultId: video.videoRunResultId,
+        attemptId,
         storagePath: localOutput,
         sizeBytes: protocolResult.outputSizeBytes,
         sha256: protocolResult.outputSha256,
-      })
-      this.database.upsertVideoCheck(runId, video.videoRunResultId, {
+      })))
+      requireCurrentAttempt(this.database.upsertVideoCheck(runId, video.videoRunResultId, {
         key: 'output_generated', name: '输出 MP4 生成', status: 'passed',
         message: `${protocolResult.outputSizeBytes} bytes；手机原始路径：${protocolResult.remoteOutputFile}`,
-      })
-      this.database.setVideoExecutionState({
+      }, attemptId))
+      requireCurrentAttempt(this.database.setVideoExecutionState({
         videoRunResultId: video.videoRunResultId,
+        attemptId,
         executionStatus: 'passed', executionFailureCode: null,
-      })
+      }))
 
       const mediaIntegrity = await this.mediaIntegrityChecker.check(localOutput, signal)
-      this.database.recordVideoMediaIntegrity(video.videoRunResultId, mediaIntegrity)
-      this.database.upsertVideoCheck(runId, video.videoRunResultId, {
+      requireCurrentAttempt(this.database.recordVideoMediaIntegrity(
+        video.videoRunResultId, mediaIntegrity, attemptId,
+      ))
+      requireCurrentAttempt(this.database.upsertVideoCheck(runId, video.videoRunResultId, {
         key: 'media_integrity', name: '输出视频基础完整性', status: mediaIntegrity.status,
         message: mediaIntegrity.message,
-      })
+      }, attemptId))
       if (mediaIntegrity.status === 'failed') {
         throw new TaskExecutionError(mediaIntegrity.message, mediaIntegrity.failureCode ?? 'MEDIA_INTEGRITY_FAILED')
       }
 
       update('generating_report', 96, '正在保存日志、截图和兼容性报告')
       await this.captureScreenshot(executionKey, path.join(screenshotDir, 'final.png'), signal).catch(() => undefined)
-      this.database.setVideoExecutionState({
+      requireCurrentAttempt(this.database.setVideoExecutionState({
         videoRunResultId: video.videoRunResultId,
+        attemptId,
         runStatus: 'passed', phase: 'completed', progress: 100, finished: true,
         executionStatus: 'passed', executionFailureCode: null, failure: null,
-      })
+      }))
       this.database.addVideoLog(
         taskId, runId, video.videoRunResultId,
         `真实 APK 处理完成；协议 ${protocol.id}；输出 MP4 已回收到平台`
@@ -511,14 +706,20 @@ export class AdbRunExecutor {
       )
       return { passed: true, cancelled: false }
     } catch (error) {
-      const cancelled = signal.aborted || this.database.isCancelled(taskId)
+      const deadlineFailure = signal.aborted
+        && signal.reason instanceof TaskExecutionError
+        && signal.reason.code === 'TASK_TIMEOUT'
+        ? signal.reason
+        : undefined
+      const effectiveError = deadlineFailure ?? error
+      const cancelled = !deadlineFailure && (signal.aborted || this.database.isCancelled(taskId))
       const failureEvidenceRefs = await evidenceRecorder.captureFailure({
         phase: currentPhase,
-        error,
+        error: effectiveError,
         cancelled,
       }).catch(() => [])
       const failure = executionFailureFromError({
-        error,
+        error: effectiveError,
         phase: currentPhase,
         cancelled,
         evidenceRefs: [
@@ -528,9 +729,15 @@ export class AdbRunExecutor {
       })
       if (!cancelled) {
         const mediaFailure = failure.code.startsWith('MEDIA_')
+        const retryable = this.isRecoverableInfrastructureFailure(failure)
         this.database.setVideoExecutionState({
           videoRunResultId: video.videoRunResultId,
-          runStatus: 'failed', phase: failure.phase, progress: 100, finished: true, failure,
+          attemptId,
+          runStatus: retryable ? 'running' : 'failed',
+          phase: failure.phase,
+          progress: retryable ? 95 : 100,
+          finished: !retryable,
+          failure,
           executionStatus: mediaFailure ? 'passed' : 'failed',
           executionFailureCode: mediaFailure ? null : failure.code,
         })
@@ -539,6 +746,7 @@ export class AdbRunExecutor {
       await writeFile(localLogcat, '', { flag: 'a' }).catch(() => undefined)
       return { passed: false, cancelled, failure }
     } finally {
+      clearTimeout(deadlineTimer)
       if (!protocolExecutorOwnsCleanup) {
         await this.bestEffortDeviceRun(
           ['shell', 'am', 'force-stop', protocol.packageName],
