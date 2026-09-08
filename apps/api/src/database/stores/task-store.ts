@@ -176,6 +176,8 @@ export class TaskStore {
       let mediaMetadata: VideoRunResultView['mediaMetadata']
       try { mediaMetadata = result.mediaMetadata ? JSON.parse(result.mediaMetadata) : undefined } catch { mediaMetadata = undefined }
       const outputs = this.artifacts.listOutputsForVideoResult(result.id)
+      const attempts = this.videoExecutions.listAttempts(result.id)
+      const hasAttemptEvidence = attempts.some((attempt) => attempt.evidenceDirectory)
       const view: VideoRunResultView = {
         id: result.id,
         taskId: result.taskId,
@@ -189,7 +191,7 @@ export class TaskStore {
         logs: this.audit.listMessagesForVideoResult(result.id),
         outputs,
         primaryOutput: outputs[0],
-        attempts: this.videoExecutions.listAttempts(result.id),
+        attempts,
         startedAt: result.startedAt,
         finishedAt: result.finishedAt,
         failureCode: result.failureCode,
@@ -206,6 +208,12 @@ export class TaskStore {
         mediaIntegrityStatus: result.mediaIntegrityStatus as VideoRunResultView['mediaIntegrityStatus'],
         mediaIntegrityFailureCode: result.mediaIntegrityFailureCode,
         mediaMetadata,
+        logcatUrl: hasAttemptEvidence
+          ? `/api/tasks/${encodeURIComponent(taskId)}/device-runs/${encodeURIComponent(result.deviceRunId)}/logcat?video=${encodeURIComponent(result.taskVideoId)}`
+          : undefined,
+        screenshotUrl: hasAttemptEvidence
+          ? `/api/tasks/${encodeURIComponent(taskId)}/device-runs/${encodeURIComponent(result.deviceRunId)}/screenshots/final?video=${encodeURIComponent(result.taskVideoId)}`
+          : undefined,
       }
       videoRuns[result.taskVideoId] ??= {}
       videoRuns[result.taskVideoId][result.deviceId] = view

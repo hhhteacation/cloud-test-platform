@@ -35,6 +35,13 @@ export function ReportPage() {
   const protocolLabel = isRealPlatform
     ? report?.apk?.protocol?.name ?? '未识别 APK 执行协议'
     : 'DemoPlaybackAdapter'
+  const videoEntriesForSelectedRun = selectedRun && report
+    ? (report.videos ?? [{ id: report.asset.id, sequence: 0, displayName: report.asset.name }]).map((video) => ({
+        sequence: video.sequence,
+        displayName: video.displayName,
+        result: report.videoRuns?.[video.id]?.[selectedRun.deviceId],
+      }))
+    : undefined
 
   if (loading) return <Card loading />
   if (!report) return <Alert type="error" showIcon message="报告不存在" />
@@ -75,6 +82,7 @@ export function ReportPage() {
         device={selectedRun ? deviceById.get(selectedRun.deviceId) : undefined}
         protocolName={protocolLabel}
         protocol={report.apk?.protocol}
+        videoEntries={videoEntriesForSelectedRun}
         onClose={() => setSelectedRun(undefined)}
       />
     </div>
