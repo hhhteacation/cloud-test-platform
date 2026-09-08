@@ -27,6 +27,32 @@ export class TaskRequestError extends Error {
   }
 }
 
+function waitForEndpointResolution<T>(operation: Promise<T>, controller: AbortController, deadlineMs: number): Promise<T> {
+  const deadlineError = new TaskRequestError(
+    409,
+    'ENDPOINT_RESOLUTION_DEADLINE_EXCEEDED',
+    `任务创建前 Endpoint 预校验超过 ${deadlineMs}ms 预算`,
+  )
+  return new Promise<T>((resolve, reject) => {
+    let settled = false
+    const finish = (callback: () => void) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      callback()
+    }
+    const timer = setTimeout(() => {
+      controller.abort(deadlineError)
+      finish(() => reject(deadlineError))
+    }, deadlineMs)
+    timer.unref()
+    void operation.then(
+      (value) => finish(() => resolve(value)),
+      (error) => finish(() => reject(error)),
+    )
+  })
+}
+
 export class TaskService {
   constructor(
     private readonly database: PlatformDatabase,
@@ -72,7 +98,21 @@ export class TaskService {
       try {
         // 创建时只验证当前模式至少存在一个可用连接；实际 Endpoint 在该 Run
         // 离开物理设备队列、真正开始执行前重新解析并固化，避免长时间排队后使用过期连接。
-        await this.deviceRegistry.resolveExecutionEndpoint(deviceId, connectionMode)
+        const controller = new AbortController()
+        try {
+          const resolution = this.deviceRegistry.resolveExecutionEndpoint(
+            deviceId,
+            connectionMode,
+            { signal: controller.signal },
+          )
+          await waitForEndpointResolution(
+            resolution,
+            controller,
+            this.config.endpointResolutionDeadlineMs ?? 15_000,
+          )
+        } finally {
+          controller.abort()
+        }
       } catch (error) {
         if (error instanceof DeviceRegistrationError) {
           throw new TaskRequestError(error.statusCode, error.code, error.message)
@@ -154,6 +194,8 @@ export class TaskService {
 }
 
 function mapTaskStoreError(error: TaskStoreError) {
-  const statusCode = error.code === 'VIDEO_TOO_LARGE' || error.code === 'TASK_VIDEO_BYTES_EXCEEDED' ? 413 : 400
+  const statusCode = error.code === 'DEVICE_CONNECTION_BUSY'
+    ? 409
+    : error.code === 'VIDEO_TOO_LARGE' || error.code === 'TASK_VIDEO_BYTES_EXCEEDED' ? 413 : 400
   return new TaskRequestError(statusCode, error.code, error.message)
 }

@@ -104,4 +104,55 @@ describe('HttpTestPlatformClient task normalization', () => {
     await expect(client.removeNetworkDevice('device-1', 'endpoint-1')).resolves.toBeUndefined()
   })
 
+  it('联网管理模式使用 PATCH 并显式发送模式 JSON', async () => {
+    const state = { deviceId: 'device-1', managementMode: 'managed' }
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(state), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new HttpTestPlatformClient('/api')
+
+    await expect(client.setNetworkManagementMode('device-1', 'managed')).resolves.toEqual(state)
+    expect(fetchMock).toHaveBeenCalledWith('/api/devices/device-1/network-management', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'managed' }),
+    })
+  })
+
+  it('Shadow Observation 决策使用只读 GET 接口', async () => {
+    const decisions = [{
+      observation: {
+        id: 'observation-1', source: 'mdns', serviceInstance: 'adb-SERIAL-1-candidate',
+        transportType: 'wireless_tls', host: '192.0.2.10', port: 37123,
+        observedAt: '2026-08-25T00:00:00.000Z', expiresAt: '2026-08-25T00:01:00.000Z',
+        verificationStatus: 'unverified',
+      },
+      status: 'shadow_only', deviceId: 'device-1', reasonCode: 'SHADOW_MODE_NO_ACTION',
+    }]
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(decisions), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new HttpTestPlatformClient('/api')
+
+    await expect(client.listNetworkObservationDecisions()).resolves.toEqual(decisions)
+    expect(fetchMock).toHaveBeenCalledWith('/api/devices/network/observation-decisions', undefined)
+  })
+
+  it('Managed Adoption 运行状态使用只读 GET 接口', async () => {
+    const status = {
+      enabled: false, running: false, cyclesStarted: 0, cyclesCompleted: 0,
+      adoptionFailures: 0, discoveryFailures: 0,
+    }
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(status), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new HttpTestPlatformClient('/api')
+
+    await expect(client.getManagedObservationAdoptionStatus()).resolves.toEqual(status)
+    expect(fetchMock).toHaveBeenCalledWith('/api/devices/network/managed-adoption-status', undefined)
+  })
+
 })

@@ -29,7 +29,11 @@ export interface AppConfig {
   maxProcessOutputBytes: number
   maxLogcatBytes: number
   processKillGraceMs: number
+  endpointResolutionDeadlineMs: number
+  attemptRecoveryDeadlineMs: number
   pollIntervalMs: number
+  managedObservationAdoptionEnabled: boolean
+  managedObservationAdoptionDeviceIds?: string[]
 }
 
 export class ConfigError extends Error {
@@ -59,6 +63,19 @@ function positiveNumber(env: NodeJS.ProcessEnv, name: string, fallback: number) 
     throw new ConfigError(`${name} 必须是大于 0 的数字，当前值：${raw}`)
   }
   return value
+}
+
+function strictBoolean(env: NodeJS.ProcessEnv, name: string, fallback: boolean) {
+  const raw = env[name]
+  if (raw === undefined || raw.trim() === '') return fallback
+  const value = raw.trim().toLowerCase()
+  if (value === 'true') return true
+  if (value === 'false') return false
+  throw new ConfigError(`${name} 必须显式配置为 true 或 false，当前值：${raw}`)
+}
+
+function csvValues(env: NodeJS.ProcessEnv, name: string) {
+  return (env[name] ?? '').split(',').map((value) => value.trim()).filter(Boolean)
 }
 
 function loopbackHost(env: NodeJS.ProcessEnv): AppConfig['host'] {
@@ -110,7 +127,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     maxProcessOutputBytes: positiveInteger(env, 'MAX_PROCESS_OUTPUT_BYTES', 4 * 1024 * 1024),
     maxLogcatBytes,
     processKillGraceMs: positiveInteger(env, 'PROCESS_KILL_GRACE_MS', 3000),
+    endpointResolutionDeadlineMs: positiveInteger(env, 'ENDPOINT_RESOLUTION_DEADLINE_MS', 15_000),
+    attemptRecoveryDeadlineMs: positiveInteger(env, 'ATTEMPT_RECOVERY_DEADLINE_MS', 15_000),
     pollIntervalMs: positiveInteger(env, 'POLL_INTERVAL_MS', 1000),
+    managedObservationAdoptionEnabled: strictBoolean(env, 'MANAGED_OBSERVATION_ADOPTION_ENABLED', false),
+    managedObservationAdoptionDeviceIds: csvValues(env, 'MANAGED_OBSERVATION_ADOPTION_DEVICE_IDS'),
   }
 }
 

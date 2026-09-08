@@ -36,6 +36,7 @@ export type TaskStoreErrorCode =
   | 'DUPLICATE_VIDEO_CONTENT'
   | 'VIDEO_TOO_LARGE'
   | 'TASK_VIDEO_BYTES_EXCEEDED'
+  | 'DEVICE_CONNECTION_BUSY'
 
 export class TaskStoreError extends Error {
   constructor(readonly code: TaskStoreErrorCode, message: string) {
@@ -75,8 +76,24 @@ export class TaskStore {
 
     const taskId = `task-${randomUUID()}`
     const createdAt = now()
-    this.db.exec('BEGIN')
+    this.db.exec('BEGIN IMMEDIATE')
     try {
+      const placeholders = input.deviceIds.map(() => '?').join(', ')
+      const busyConnection = input.deviceIds.length > 0
+        ? this.db.prepare(`
+            SELECT device_id
+            FROM device_connection_state
+            WHERE device_id IN (${placeholders})
+              AND observed_network_state IN ('discovered', 'connecting', 'verifying', 'recovering')
+            LIMIT 1
+          `).get(...input.deviceIds) as Row | undefined
+        : undefined
+      if (busyConnection) {
+        throw new TaskStoreError(
+          'DEVICE_CONNECTION_BUSY',
+          `设备 ${asString(busyConnection.device_id)} 正在执行连接操作，请等待连接状态稳定后再创建任务`,
+        )
+      }
       this.db.prepare(`
         INSERT INTO tasks (
           id, platform, name, apk_artifact_id, video_artifact_id, status,

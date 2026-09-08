@@ -9,6 +9,7 @@ import type {
   VideoAsset,
   DeviceEndpoint,
   NetworkConnectionOperation,
+  NetworkManagementMode,
 } from '../types'
 import { DEVICES } from '../features/tasks/taskDefinitions'
 
@@ -77,6 +78,27 @@ export class MockTestPlatformClient implements TestPlatformClient {
     return []
   }
 
+  async listNetworkObservationDecisions() {
+    return []
+  }
+
+  async getManagedObservationAdoptionStatus() {
+    return {
+      enabled: false,
+      gateMode: 'disabled' as const,
+      allowedDeviceIds: [],
+      running: false,
+      cyclesStarted: 0,
+      cyclesCompleted: 0,
+      adoptionFailures: 0,
+      discoveryFailures: 0,
+    }
+  }
+
+  async recoverNetworkConnection(): Promise<DeviceEndpoint> {
+    throw new PlatformApiError('Mock 模式不执行真实联网恢复', 'MOCK_NETWORK_UNAVAILABLE', 409)
+  }
+
   async connectNetworkDevice(_deviceId: string, _host: string, _port: number): Promise<DeviceEndpoint> {
     throw new PlatformApiError('Mock 模式不连接真实 ADB，请使用真实后端模式管理联网设备', 'MOCK_NETWORK_UNAVAILABLE', 409)
   }
@@ -91,6 +113,10 @@ export class MockTestPlatformClient implements TestPlatformClient {
 
   async removeNetworkDevice(): Promise<void> {
     throw new PlatformApiError('Mock 模式不连接真实 ADB', 'MOCK_NETWORK_UNAVAILABLE', 409)
+  }
+
+  async setNetworkManagementMode(_deviceId: string, _mode: NetworkManagementMode): Promise<import('../types').NetworkConnectionStateSummary> {
+    throw new PlatformApiError('Mock 模式不修改联网管理策略', 'MOCK_NETWORK_UNAVAILABLE', 409)
   }
 
   async startNetworkConnectionOperation(): Promise<import('../types').NetworkConnectionOperationStart> {

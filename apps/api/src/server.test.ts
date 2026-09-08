@@ -24,6 +24,8 @@ async function testConfig(): Promise<AppConfig> {
     maxApkBytes: 1024, maxVideoBytes: 1024, minFreeDiskBytes: 1,
     maxConcurrentUploads: 1, maxProcessOutputBytes: 1024, maxLogcatBytes: 4096,
     processKillGraceMs: 10, pollIntervalMs: 10,
+    managedObservationAdoptionEnabled: false,
+    managedObservationAdoptionDeviceIds: [],
   }
 }
 

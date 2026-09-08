@@ -173,6 +173,8 @@ const MORPHO_PROTOCOL: ApkExecutionProtocol = {
         'honor-magic-os-unreviewed-app-block-v1',
         'xiaomi-hyperos-package-installer-v1',
         'oplus-package-installer-v1',
+        'oplus-package-installer-risk-v2',
+        'oplus-package-installer-finish-v1',
         'android-runtime-permission-v1',
       ],
       timeoutMs: 120_000,

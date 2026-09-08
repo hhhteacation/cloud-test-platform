@@ -479,6 +479,69 @@ const OPLUS_PROFILE: DialogProfileDefinition = {
 }
 
 /**
+ * ColorOS risk-guide variant emitted on newer builds where the legacy
+ * `tv_risk_name`/`tv_risk_desc` nodes are omitted.  Keep this as a separate
+ * profile so the older page remains fully guarded; the exact activity,
+ * application identity, result title/description and continue resource are
+ * still required before any tap is allowed.
+ */
+const OPLUS_INSTALL_RISK_V2_PROFILE: DialogProfileDefinition = {
+  id: 'oplus-package-installer-risk-v2',
+  allowedPhases: ['install'],
+  manufacturers: /oppo|oneplus|realme|oplus|一加|真我/i,
+  packageNames: ['com.morphoinc.videopostprocessor'],
+  allowedWindowPackages: ['com.oplus.appdetail'],
+  allowedWindowComponents: [
+    /^com\.oplus\.appdetail\/com\.oplus\.appdetail\.model\.guide\.ui\.InstallGuideActivity$/,
+  ],
+  requiredResourceIds: [
+    'com.oplus.appdetail:id/app_name',
+    'com.oplus.appdetail:id/tv_result_title',
+    'com.oplus.appdetail:id/tv_result_desc',
+    'com.oplus.appdetail:id/btn_left',
+  ],
+  featurePatterns: [
+    /检测结果[:：]?\s*涉及敏感权限/i,
+    /可能申请使用了\s*\d+\s*项敏感权限/i,
+  ],
+  targets: [{
+    textPatterns: [/^继续安装$/],
+    resourceIds: ['com.oplus.appdetail:id/btn_left'],
+  }],
+  action: 'continue-install',
+}
+
+/**
+ * ColorOS installation-success page. The ADB install process can remain
+ * blocked until the user dismisses this page even though the APK is already
+ * installed. This profile is intentionally narrower than the risk-guide
+ * profile and only taps the exact success-page "完成" button.
+ */
+const OPLUS_INSTALL_FINISH_PROFILE: DialogProfileDefinition = {
+  id: 'oplus-package-installer-finish-v1',
+  allowedPhases: ['install'],
+  manufacturers: /oppo|oneplus|realme|oplus|一加|真我/i,
+  allowedWindowPackages: ['com.oplus.appdetail'],
+  allowedWindowComponents: [
+    /^com\.oplus\.appdetail\/com\.oplus\.appdetail\.model\.finish\.InstallFinishActivity$/,
+  ],
+  requiredResourceIds: [
+    'com.oplus.appdetail:id/process_finish_title',
+    'com.oplus.appdetail:id/launch_button',
+  ],
+  // The matcher requires two independent feature matches.  Use the verified
+  // resource IDs here because nodeSearchText appends each node's resource ID,
+  // so an anchored text-only pattern would be brittle while a generic label
+  // could match an unrelated installer page.
+  featurePatterns: [
+    /com\.oplus\.appdetail:id\/process_finish_title/,
+    /com\.oplus\.appdetail:id\/launch_button/,
+  ],
+  targets: [{ textPatterns: [/^完成$/], resourceIds: ['com.oplus.appdetail:id/launch_button'] }],
+  action: 'continue-install',
+}
+
+/**
  * ColorOS storage-compatibility warning shown after Morpho's first launch.
  *
  * This is not a storage permission grant. The profile only dismisses the
@@ -561,6 +624,8 @@ export const DIALOG_PROFILES: readonly DialogProfileDefinition[] = [
   HONOR_SAFE_MODE_INSTALL_SHEET_PROFILE,
   XIAOMI_HYPEROS_PACKAGE_INSTALLER_PROFILE,
   OPLUS_PROFILE,
+  OPLUS_INSTALL_RISK_V2_PROFILE,
+  OPLUS_INSTALL_FINISH_PROFILE,
   OPLUS_STORAGE_COMPATIBILITY_PROFILE,
   ANDROID_PERMISSION_PROFILE,
 ]

@@ -68,6 +68,26 @@ describe('AppConfig', () => {
     expect(() => loadConfig({ HOME: '/tmp/home', MAX_LOGCAT_BYTES: '0' })).toThrow(ConfigError)
   })
 
+  it('为 Attempt 间连接恢复提供独立 deadline', () => {
+    expect(loadConfig({ HOME: '/tmp/home' }).attemptRecoveryDeadlineMs).toBe(15_000)
+    expect(loadConfig({
+      HOME: '/tmp/home', ATTEMPT_RECOVERY_DEADLINE_MS: '2500',
+    }).attemptRecoveryDeadlineMs).toBe(2500)
+    expect(() => loadConfig({
+      HOME: '/tmp/home', ATTEMPT_RECOVERY_DEADLINE_MS: '0',
+    })).toThrow(ConfigError)
+  })
+
+  it('为首次 Endpoint 解析提供独立 deadline', () => {
+    expect(loadConfig({ HOME: '/tmp/home' }).endpointResolutionDeadlineMs).toBe(15_000)
+    expect(loadConfig({
+      HOME: '/tmp/home', ENDPOINT_RESOLUTION_DEADLINE_MS: '3500',
+    }).endpointResolutionDeadlineMs).toBe(3500)
+    expect(() => loadConfig({
+      HOME: '/tmp/home', ENDPOINT_RESOLUTION_DEADLINE_MS: '0',
+    })).toThrow(ConfigError)
+  })
+
   it('允许通过环境变量覆盖媒体工具路径', () => {
     const value = loadConfig({
       HOME: '/tmp/home',
@@ -76,5 +96,22 @@ describe('AppConfig', () => {
     })
     expect(value.ffmpegPath).toBe('/custom/bin/ffmpeg')
     expect(value.ffprobePath).toBe('/custom/bin/ffprobe')
+  })
+
+  it('Managed Observation 自动采用默认关闭，只接受显式 true 或 false', () => {
+    expect(loadConfig({ HOME: '/tmp/home' }).managedObservationAdoptionEnabled).toBe(false)
+    expect(loadConfig({ HOME: '/tmp/home' }).managedObservationAdoptionDeviceIds).toEqual([])
+    expect(loadConfig({
+      HOME: '/tmp/home',
+      MANAGED_OBSERVATION_ADOPTION_ENABLED: 'true',
+    }).managedObservationAdoptionEnabled).toBe(true)
+    expect(loadConfig({
+      HOME: '/tmp/home',
+      MANAGED_OBSERVATION_ADOPTION_ENABLED: 'false',
+    }).managedObservationAdoptionEnabled).toBe(false)
+    expect(() => loadConfig({
+      HOME: '/tmp/home',
+      MANAGED_OBSERVATION_ADOPTION_ENABLED: '1',
+    })).toThrow(ConfigError)
   })
 })
