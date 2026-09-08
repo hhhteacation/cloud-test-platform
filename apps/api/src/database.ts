@@ -136,6 +136,15 @@ export class PlatformDatabase {
   listVideoExecutionsForDeviceRun(taskId: string, runId: string) {
     return this.videoExecutions.listExecutionsForDeviceRun(taskId, runId)
   }
+  getVideoRunResultForDeviceRun(taskId: string, runId: string, taskVideoId: string) {
+    return this.videoExecutions.getResultForDeviceRun(taskId, runId, taskVideoId)
+  }
+  getVideoResultLatestAttemptEvidenceDirectory(videoRunResultId: string) {
+    return this.videoExecutions.latestAttemptEvidenceDirectory(videoRunResultId)
+  }
+  getDeviceRunLatestAttemptEvidenceDirectory(taskId: string, runId: string) {
+    return this.videoExecutions.latestAttemptEvidenceDirectoryForDeviceRun(taskId, runId)
+  }
   setVideoExecutionState(input: Parameters<VideoExecutionStore['setState']>[0]) {
     return this.videoExecutions.setState(input)
   }
