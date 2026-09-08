@@ -18,22 +18,25 @@ import {
   migrateVideoRunResults,
   videoRunResultsDefinition,
 } from "./009-video-run-results.js";
-import { deviceConnectionControlMigration } from "./010-device-connection-control.js";
+// 010/011 已应用到生产库（checksum 必须与 schema_migrations 一致），不可改名。
+import { executionTimelineMigration } from "./010-execution-timeline.js";
+import { taskIdempotencyMigration } from "./011-task-idempotency.js";
+import { deviceConnectionControlMigration } from "./012-device-connection-control.js";
 import {
   addAttemptConnectionSnapshot,
   attemptConnectionSnapshotDefinition,
-} from "./011-attempt-connection-snapshot.js";
-import { networkTransportMetadataMigration } from "./012-network-transport-metadata.js";
-import { multipleNetworkEndpointsMigration } from "./013-multiple-network-endpoints.js";
+} from "./013-attempt-connection-snapshot.js";
+import { networkTransportMetadataMigration } from "./014-network-transport-metadata.js";
+import { multipleNetworkEndpointsMigration } from "./015-multiple-network-endpoints.js";
 import {
   endpointLogicalIdentityMigration,
   migrateEndpointLogicalIdentity,
-} from "./014-endpoint-logical-identity.js";
-import { endpointHealthColumns } from "./015-endpoint-health.js";
-import { endpointObservationFreshnessColumns } from "./016-endpoint-observation-freshness.js";
+} from "./016-endpoint-logical-identity.js";
+import { endpointHealthColumns } from "./017-endpoint-health.js";
+import { endpointObservationFreshnessColumns } from "./018-endpoint-observation-freshness.js";
 import {
   networkConnectionOperationTransportSnapshotColumns,
-} from "./017-network-connection-operation-transport-snapshot.js";
+} from "./019-network-connection-operation-transport-snapshot.js";
 
 export interface DatabaseMigration {
   id: string;
@@ -151,17 +154,34 @@ export const DATABASE_MIGRATIONS: DatabaseMigration[] = [
     up: migrateVideoRunResults,
   },
   {
-    id: "010-device-connection-control",
+    id: "010-execution-timeline",
+    definition: executionTimelineMigration,
+    up: (db) => {
+      ensureColumns(db, "device_runs", executionTimelineMigration.deviceRuns);
+      ensureColumns(
+        db,
+        "video_run_attempts",
+        executionTimelineMigration.videoRunAttempts,
+      );
+    },
+  },
+  {
+    id: "011-task-idempotency",
+    definition: taskIdempotencyMigration,
+    up: (db) => db.exec(taskIdempotencyMigration),
+  },
+  {
+    id: "012-device-connection-control",
     definition: deviceConnectionControlMigration,
     up: (db) => db.exec(deviceConnectionControlMigration),
   },
   {
-    id: "011-attempt-connection-snapshot",
+    id: "013-attempt-connection-snapshot",
     definition: attemptConnectionSnapshotDefinition,
     up: addAttemptConnectionSnapshot,
   },
   {
-    id: "012-network-transport-metadata",
+    id: "014-network-transport-metadata",
     definition: networkTransportMetadataMigration,
     up: (db) =>
       ensureColumns(
@@ -171,19 +191,19 @@ export const DATABASE_MIGRATIONS: DatabaseMigration[] = [
       ),
   },
   {
-    id: "013-multiple-network-endpoints",
+    id: "015-multiple-network-endpoints",
     definition: multipleNetworkEndpointsMigration,
     up: (db) => db.exec(multipleNetworkEndpointsMigration),
     foreignKeysOffDuringMigration: true,
   },
   {
-    id: "014-endpoint-logical-identity",
+    id: "016-endpoint-logical-identity",
     definition: endpointLogicalIdentityMigration,
     up: migrateEndpointLogicalIdentity,
     foreignKeysOffDuringMigration: true,
   },
   {
-    id: "015-endpoint-health",
+    id: "017-endpoint-health",
     definition: endpointHealthColumns,
     up: (db) =>
       ensureColumns(
@@ -193,7 +213,7 @@ export const DATABASE_MIGRATIONS: DatabaseMigration[] = [
       ),
   },
   {
-    id: "016-endpoint-observation-freshness",
+    id: "018-endpoint-observation-freshness",
     definition: endpointObservationFreshnessColumns,
     up: (db) =>
       ensureColumns(
@@ -203,7 +223,7 @@ export const DATABASE_MIGRATIONS: DatabaseMigration[] = [
       ),
   },
   {
-    id: "017-network-connection-operation-transport-snapshot",
+    id: "019-network-connection-operation-transport-snapshot",
     definition: networkConnectionOperationTransportSnapshotColumns,
     up: (db) =>
       ensureColumns(
