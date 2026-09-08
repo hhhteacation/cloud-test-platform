@@ -34,13 +34,13 @@ async function databaseFixture() {
 }
 
 describe("数据库迁移", () => {
-  it("014 保持已部署定义的 checksum，不修改已应用迁移", () => {
+  it("016 保持已部署定义的 checksum，不修改已应用迁移", () => {
     const migration = DATABASE_MIGRATIONS.find(
-      ({ id }) => id === "014-endpoint-logical-identity",
+      ({ id }) => id === "016-endpoint-logical-identity",
     );
     expect(migration).toBeDefined();
     expect(migrationChecksum(migration!)).toBe(
-      "4619dd49c640185100a01eebbf4525bd8c36559ea3bfd0e322e4749489c4cf4a",
+      "bdef612e313209f804c0415fc6bcbef044a2fd51cc05500b12715e35ef42d5d9",
     );
   });
 
@@ -58,19 +58,21 @@ describe("数据库迁移", () => {
       "007-preserve-network-connection-snapshots",
       "008-task-videos",
       "009-video-run-results",
-      "010-device-connection-control",
-      "011-attempt-connection-snapshot",
-      "012-network-transport-metadata",
-      "013-multiple-network-endpoints",
-      "014-endpoint-logical-identity",
-      "015-endpoint-health",
-      "016-endpoint-observation-freshness",
-      "017-network-connection-operation-transport-snapshot",
+      "010-execution-timeline",
+      "011-task-idempotency",
+      "012-device-connection-control",
+      "013-attempt-connection-snapshot",
+      "014-network-transport-metadata",
+      "015-multiple-network-endpoints",
+      "016-endpoint-logical-identity",
+      "017-endpoint-health",
+      "018-endpoint-observation-freshness",
+      "019-network-connection-operation-transport-snapshot",
     ]);
     expect(second.appliedMigrationIds).toEqual([]);
     expect(
       db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get(),
-    ).toMatchObject({ count: 17 });
+    ).toMatchObject({ count: 19 });
     db.close();
   });
 
@@ -85,7 +87,7 @@ describe("数据库迁移", () => {
     `,
     ).run();
 
-    runDatabaseMigrations(db, databasePath, DATABASE_MIGRATIONS.slice(0, 10));
+    runDatabaseMigrations(db, databasePath, DATABASE_MIGRATIONS.slice(0, 12));
 
     expect(
       db
@@ -275,14 +277,16 @@ describe("数据库迁移", () => {
       "007-preserve-network-connection-snapshots",
       "008-task-videos",
       "009-video-run-results",
-      "010-device-connection-control",
-      "011-attempt-connection-snapshot",
-      "012-network-transport-metadata",
-      "013-multiple-network-endpoints",
-      "014-endpoint-logical-identity",
-      "015-endpoint-health",
-      "016-endpoint-observation-freshness",
-      "017-network-connection-operation-transport-snapshot",
+      "010-execution-timeline",
+      "011-task-idempotency",
+      "012-device-connection-control",
+      "013-attempt-connection-snapshot",
+      "014-network-transport-metadata",
+      "015-multiple-network-endpoints",
+      "016-endpoint-logical-identity",
+      "017-endpoint-health",
+      "018-endpoint-observation-freshness",
+      "019-network-connection-operation-transport-snapshot",
     ]);
     expect(
       db
@@ -387,14 +391,16 @@ describe("数据库迁移", () => {
       "007-preserve-network-connection-snapshots",
       "008-task-videos",
       "009-video-run-results",
-      "010-device-connection-control",
-      "011-attempt-connection-snapshot",
-      "012-network-transport-metadata",
-      "013-multiple-network-endpoints",
-      "014-endpoint-logical-identity",
-      "015-endpoint-health",
-      "016-endpoint-observation-freshness",
-      "017-network-connection-operation-transport-snapshot",
+      "010-execution-timeline",
+      "011-task-idempotency",
+      "012-device-connection-control",
+      "013-attempt-connection-snapshot",
+      "014-network-transport-metadata",
+      "015-multiple-network-endpoints",
+      "016-endpoint-logical-identity",
+      "017-endpoint-health",
+      "018-endpoint-observation-freshness",
+      "019-network-connection-operation-transport-snapshot",
     ]);
     expect(result.backupPath).toBeTruthy();
     expect(existsSync(result.backupPath!)).toBe(true);
@@ -478,7 +484,7 @@ describe("数据库迁移", () => {
   it("014 收敛同设备同传输 Endpoint 时保留 active 和操作快照引用", async () => {
     const { db, databasePath } = await databaseFixture();
     db.exec("PRAGMA foreign_keys = ON");
-    runDatabaseMigrations(db, databasePath, DATABASE_MIGRATIONS.slice(0, 13));
+    runDatabaseMigrations(db, databasePath, DATABASE_MIGRATIONS.slice(0, 15));
     const oldAt = "2026-08-30T00:00:00.000Z";
     const newAt = "2026-08-31T00:00:00.000Z";
     db.prepare(
@@ -631,11 +637,11 @@ describe("数据库迁移", () => {
     ).run(newAt);
 
     const result = runDatabaseMigrations(db, databasePath, [
-      DATABASE_MIGRATIONS[13],
+      DATABASE_MIGRATIONS[15],
     ]);
 
     expect(result.appliedMigrationIds).toEqual([
-      "014-endpoint-logical-identity",
+      "016-endpoint-logical-identity",
     ]);
     expect(
       db
@@ -746,7 +752,7 @@ describe("数据库迁移", () => {
 
   it("016 在已部署 014 后补齐 Observation freshness 列并保留 Endpoint", async () => {
     const { db, databasePath } = await databaseFixture();
-    runDatabaseMigrations(db, databasePath, DATABASE_MIGRATIONS.slice(0, 14));
+    runDatabaseMigrations(db, databasePath, DATABASE_MIGRATIONS.slice(0, 16));
     const timestamp = "2026-09-01T00:00:00.000Z";
     db.prepare(
       `
@@ -776,9 +782,9 @@ describe("数据库迁移", () => {
 
     const result = runDatabaseMigrations(db, databasePath);
     expect(result.appliedMigrationIds).toEqual([
-      "015-endpoint-health",
-      "016-endpoint-observation-freshness",
-      "017-network-connection-operation-transport-snapshot",
+      "017-endpoint-health",
+      "018-endpoint-observation-freshness",
+      "019-network-connection-operation-transport-snapshot",
     ]);
     const columnsAfter = (
       db.prepare("PRAGMA table_info(device_endpoints)").all() as Array<{
@@ -821,7 +827,7 @@ describe("数据库迁移", () => {
 
   it("017 为联网连接操作项增加可空的传输快照字段，并保留旧项兼容性", async () => {
     const { db, databasePath } = await databaseFixture();
-    runDatabaseMigrations(db, databasePath, DATABASE_MIGRATIONS.slice(0, 16));
+    runDatabaseMigrations(db, databasePath, DATABASE_MIGRATIONS.slice(0, 18));
 
     const before = (
       db
@@ -833,10 +839,10 @@ describe("数据库迁移", () => {
     );
 
     const result = runDatabaseMigrations(db, databasePath, [
-      DATABASE_MIGRATIONS[16],
+      DATABASE_MIGRATIONS[18],
     ]);
     expect(result.appliedMigrationIds).toEqual([
-      "017-network-connection-operation-transport-snapshot",
+      "019-network-connection-operation-transport-snapshot",
     ]);
     expect(
       (
@@ -1020,14 +1026,16 @@ describe("数据库迁移", () => {
       "007-preserve-network-connection-snapshots",
       "008-task-videos",
       "009-video-run-results",
-      "010-device-connection-control",
-      "011-attempt-connection-snapshot",
-      "012-network-transport-metadata",
-      "013-multiple-network-endpoints",
-      "014-endpoint-logical-identity",
-      "015-endpoint-health",
-      "016-endpoint-observation-freshness",
-      "017-network-connection-operation-transport-snapshot",
+      "010-execution-timeline",
+      "011-task-idempotency",
+      "012-device-connection-control",
+      "013-attempt-connection-snapshot",
+      "014-network-transport-metadata",
+      "015-multiple-network-endpoints",
+      "016-endpoint-logical-identity",
+      "017-endpoint-health",
+      "018-endpoint-observation-freshness",
+      "019-network-connection-operation-transport-snapshot",
     ]);
 
     const taskVideo = db
