@@ -83,6 +83,41 @@ describe('strict Android system dialog profiles', () => {
     expect(match?.node.text).toBe('继续安装')
   })
 
+  it('matches the real OPPO PJV110 ColorOS scan-result page that has no tv_risk nodes', () => {
+    const match = matchDialogAction(['oplus-package-installer-v1'], {
+      manufacturer: 'OPPO',
+      deviceModel: 'PJV110',
+      packageName: 'com.morphoinc.videopostprocessor',
+      applicationLabel: 'Morpho VideoStabilizer',
+      focusedWindowPackage: 'com.oplus.appdetail',
+      focusedWindowComponent: 'com.oplus.appdetail/com.oplus.appdetail.model.guide.ui.InstallGuideActivity',
+      phase: 'install',
+      nodes: parseUiNodes(fixture('pjv110-oplus-install-guide.xml')),
+    })
+
+    expect(match?.profileId).toBe('oplus-package-installer-v1')
+    expect(match?.action).toBe('continue-install')
+    expect(match?.node.resourceId).toBe('com.oplus.appdetail:id/btn_left')
+    expect(match?.node.text).toBe('继续安装')
+  })
+
+  it('still rejects the PJV110 scan-result page when its own verified nodes are missing', () => {
+    const incompleteXml = fixture('pjv110-oplus-install-guide.xml')
+      .replaceAll('com.oplus.appdetail:id/tv_result_title', 'com.oplus.appdetail:id/unknown_result_title')
+    const match = matchDialogAction(['oplus-package-installer-v1'], {
+      manufacturer: 'OPPO',
+      deviceModel: 'PJV110',
+      packageName: 'com.morphoinc.videopostprocessor',
+      applicationLabel: 'Morpho VideoStabilizer',
+      focusedWindowPackage: 'com.oplus.appdetail',
+      focusedWindowComponent: 'com.oplus.appdetail/com.oplus.appdetail.model.guide.ui.InstallGuideActivity',
+      phase: 'install',
+      nodes: parseUiNodes(incompleteXml),
+    })
+
+    expect(match).toBeUndefined()
+  })
+
   it('does not reuse the OPlus install action on another com.oplus.appdetail activity', () => {
     const match = matchDialogAction(['oplus-package-installer-v1'], {
       manufacturer: 'OnePlus',
@@ -181,6 +216,39 @@ describe('strict Android system dialog profiles', () => {
       'com.android.permissioncontroller:id/permission_allow_button',
     )
     expect(match?.node.text).toBe('确定')
+  })
+
+  it('matches the real Xiaomi 15 Pro Android 16 permission dialog without resource-id buttons', () => {
+    const match = matchDialogAction(['android-runtime-permission-v1'], {
+      manufacturer: 'Xiaomi',
+      packageName: 'com.morphoinc.videopostprocessor',
+      applicationLabel: 'Morpho VideoStabilizer',
+      focusedWindowPackage: 'com.android.permissioncontroller',
+      focusedWindowComponent: 'com.android.permissioncontroller/com.android.permissioncontroller.permission.ui.GrantPermissionsActivity',
+      phase: 'runtime-permission',
+      nodes: parseUiNodes(fixture('xiaomi-15pro-android16-runtime-permission.xml')),
+    })
+
+    expect(match?.profileId).toBe('android-runtime-permission-v1')
+    expect(match?.action).toBe('allow-permission')
+    expect(match?.node.text).toBe('仅在使用中允许')
+  })
+
+  it('refuses the Android 16 permission dialog when its wording does not match the whitelist', () => {
+    const xml = fixture('xiaomi-15pro-android16-runtime-permission.xml')
+      .replace('text="仅在使用中允许"', 'text="短期内允许"')
+      .replace('拍摄照片或录制视频', '访问媒体文件')
+    const match = matchDialogAction(['android-runtime-permission-v1'], {
+      manufacturer: 'Xiaomi',
+      packageName: 'com.morphoinc.videopostprocessor',
+      applicationLabel: 'Morpho VideoStabilizer',
+      focusedWindowPackage: 'com.android.permissioncontroller',
+      focusedWindowComponent: 'com.android.permissioncontroller/com.android.permissioncontroller.permission.ui.GrantPermissionsActivity',
+      phase: 'runtime-permission',
+      nodes: parseUiNodes(xml),
+    })
+
+    expect(match).toBeUndefined()
   })
 
   it('matches the real OPPO storage compatibility warning only through its dedicated profile', () => {
