@@ -166,6 +166,7 @@ const MORPHO_PROTOCOL: ApkExecutionProtocol = {
       mode: 'strict-whitelist',
       profileIds: [
         'vivo-package-installer-v1',
+        'vivo-super-guard-install-block-v1',
         'honor-package-installer-v1',
         'honor-x50-unknown-source-warning-v1',
         'honor-x50-icp-notice-v1',
