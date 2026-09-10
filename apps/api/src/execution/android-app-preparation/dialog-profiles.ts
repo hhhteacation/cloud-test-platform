@@ -27,7 +27,9 @@ export interface DialogActionMatch {
   tapTarget: DialogTapTarget
 }
 
-export type DialogBlockReason = 'honor-install-authorization-required'
+export type DialogBlockReason =
+  | 'honor-install-authorization-required'
+  | 'vivo-super-guard-authorization-required'
 
 export interface DialogBlockMatch {
   profileId: string
@@ -618,8 +620,45 @@ const ANDROID_PERMISSION_PROFILE: DialogProfileDefinition = {
   action: 'allow-permission',
 }
 
+/**
+ * vivo OriginOS「超级守护」安装拦截页（PackageInterceptActivity）。
+ *
+ * 2026-09-10 在 V2324A 真机确认：该固件把经典的「复选框 + 继续安装」守护页
+ * 换成了纯告知式拦截页——页面上没有任何可点击的授权控件（只有 返回/下载/设置
+ * 三个工具栏图标）。授权入口在设备级「超级守护」设置里，且关闭需要交互式身份
+ * 验证，平台不能也不应代替用户关闭安全机制。因此该页面按已知人工阻塞处理：
+ * 立即以结构化原因失败，而不是耗尽 120 秒弹窗超时。
+ */
+const VIVO_SUPER_GUARD_BLOCK_PROFILE: DialogBlockProfileDefinition = {
+  id: 'vivo-super-guard-install-block-v1',
+  reason: 'vivo-super-guard-authorization-required',
+  summary:
+    'vivo 超级守护已管控本次安装：该固件的守护页没有可自动点击的授权控件。' +
+    '请在设备上进入 安装器设置 → 超级守护，人工关闭或完成一次授权后重试任务。',
+  manufacturers: /vivo|bbk/i,
+  packageNames: ['com.morphoinc.videopostprocessor'],
+  allowedWindowPackages: ['com.android.packageinstaller'],
+  allowedWindowComponents: [
+    /^com\.android\.packageinstaller\/com\.android\.packageinstaller\.PackageInterceptActivity$/,
+  ],
+  requireVisibleApplicationIdentity: true,
+  evidenceVariants: [
+    {
+      requiredFeaturePatterns: [
+        /超级守护提示您/i,
+        /未经\s*vivo\s*人工亲测|非\s*vivo\s*官方应用商店/i,
+        /您可授权本次安装/i,
+      ],
+      requiredResourceIds: [
+        'com.android.packageinstaller:id/tv_install_guide',
+      ],
+    },
+  ],
+}
+
 const DIALOG_BLOCK_PROFILES: readonly DialogBlockProfileDefinition[] = [
   HONOR_MAGIC_OS_UNREVIEWED_APP_BLOCK_PROFILE,
+  VIVO_SUPER_GUARD_BLOCK_PROFILE,
 ]
 
 export const DIALOG_PROFILES: readonly DialogProfileDefinition[] = [
