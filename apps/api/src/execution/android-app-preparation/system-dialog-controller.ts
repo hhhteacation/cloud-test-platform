@@ -223,8 +223,14 @@ export class SystemDialogController {
     const match = decision.action
 
     const tapPoint = resolveTapPoint(match.tapTarget)
+    // pageFingerprint must participate in the action fingerprint: consecutive
+    // dialogs (camera → microphone on HyperOS/Android 16) reuse the exact same
+    // button text, resource-id and bounds. Without page context the second
+    // dialog collides with the first tap's fingerprint and is misread as
+    // "previous action still awaiting transition", so it is never tapped.
     const fingerprint = [
       focusedWindowPackage,
+      pageFingerprint,
       match.profileId,
       match.action,
       match.node.resourceId,
