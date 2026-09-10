@@ -12,6 +12,10 @@ import type {
   TaskDeletionReceipt,
   NetworkConnectionOperation,
   NetworkConnectionOperationStart,
+  NetworkConnectionStateSummary,
+  NetworkManagementMode,
+  NetworkObservationDecision,
+  ManagedObservationAdoptionStatus,
 } from '../types'
 
 import { ensureTaskCapabilities } from '../features/tasks/taskCapabilities'
@@ -46,6 +50,18 @@ export class HttpTestPlatformClient implements TestPlatformClient {
     return this.request<DeviceDiscoveryCandidate[]>('/devices/network/discover', { method: 'POST' })
   }
 
+  listNetworkObservationDecisions() {
+    return this.request<NetworkObservationDecision[]>('/devices/network/observation-decisions')
+  }
+
+  getManagedObservationAdoptionStatus() {
+    return this.request<ManagedObservationAdoptionStatus>('/devices/network/managed-adoption-status')
+  }
+
+  recoverNetworkConnection(deviceId: string) {
+    return this.request<DeviceEndpoint>(`/devices/${deviceId}/network/recover`, { method: 'POST' })
+  }
+
   connectNetworkDevice(deviceId: string, host: string, port: number) {
     return this.request<DeviceEndpoint>(`/devices/${deviceId}/endpoints/network`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ host, port }),
@@ -62,6 +78,14 @@ export class HttpTestPlatformClient implements TestPlatformClient {
 
   removeNetworkDevice(deviceId: string, endpointId: string) {
     return this.request<void>(`/devices/${deviceId}/endpoints/network/${endpointId}`, { method: 'DELETE' })
+  }
+
+  setNetworkManagementMode(deviceId: string, mode: NetworkManagementMode) {
+    return this.request<NetworkConnectionStateSummary>(`/devices/${deviceId}/network-management`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode }),
+    })
   }
 
   startNetworkConnectionOperation() {

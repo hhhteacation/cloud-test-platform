@@ -14,7 +14,15 @@ function handleDeviceError(request: { log: { error: (error: unknown) => void } }
   return reply.code(500).send({ code: 'DEVICE_OPERATION_FAILED', message: fallback })
 }
 
-export function registerDeviceRoutes(app: FastifyInstance, deviceRegistry: DeviceRegistryService) {
+export interface DeviceRouteObservability {
+  getManagedObservationAdoptionStatus(): unknown
+}
+
+export function registerDeviceRoutes(
+  app: FastifyInstance,
+  deviceRegistry: DeviceRegistryService,
+  observability?: DeviceRouteObservability,
+) {
   app.get('/api/devices', async () => deviceRegistry.listRegisteredSnapshot('android'))
 
   app.post('/api/devices/refresh', async (request, reply) => {
@@ -31,6 +39,20 @@ export function registerDeviceRoutes(app: FastifyInstance, deviceRegistry: Devic
     try { return await deviceRegistry.discoverNetwork('android') }
     catch (error) { return handleDeviceError(request, reply, error, '联网 ADB 服务发现失败') }
   })
+
+  app.get('/api/devices/network/observations', async () => (
+    deviceRegistry.listNetworkObservations()
+  ))
+
+  app.get('/api/devices/network/observation-decisions', async () => (
+    deviceRegistry.listNetworkObservationDecisions()
+  ))
+
+  if (observability) {
+    app.get('/api/devices/network/managed-adoption-status', async () => (
+      observability.getManagedObservationAdoptionStatus()
+    ))
+  }
 
   app.post<{ Body: { serial?: string } }>('/api/devices/register', async (request, reply) => {
     try {
@@ -50,6 +72,14 @@ export function registerDeviceRoutes(app: FastifyInstance, deviceRegistry: Devic
     }
   })
 
+  app.post<{ Params: { deviceId: string } }>('/api/devices/:deviceId/network/recover', async (request, reply) => {
+    try {
+      return reply.send(await deviceRegistry.recoverNetworkConnection(request.params.deviceId))
+    } catch (error) {
+      return handleDeviceError(request, reply, error, '人工恢复联网 ADB 失败')
+    }
+  })
+
   app.post<{ Params: { deviceId: string; endpointId: string } }>('/api/devices/:deviceId/endpoints/network/:endpointId/connect', async (request, reply) => {
     try {
       const endpoint = await deviceRegistry.refreshNetwork(request.params.deviceId, request.params.endpointId)
@@ -64,6 +94,21 @@ export function registerDeviceRoutes(app: FastifyInstance, deviceRegistry: Devic
       return reply.code(202).send(deviceRegistry.startNetworkConnectionOperation())
     } catch (error) {
       return handleDeviceError(request, reply, error, '批量联网 ADB 连接启动失败')
+    }
+  })
+
+  app.patch<{ Params: { deviceId: string }; Body: { mode?: string } }>('/api/devices/:deviceId/network-management', async (request, reply) => {
+    const mode = request.body?.mode
+    if (mode !== 'manual' && mode !== 'shadow' && mode !== 'managed') {
+      return reply.code(400).send({
+        code: 'INVALID_NETWORK_MANAGEMENT_MODE',
+        message: '联网管理模式必须是 manual、shadow 或 managed',
+      })
+    }
+    try {
+      return reply.send(deviceRegistry.setNetworkManagementMode(request.params.deviceId, mode))
+    } catch (error) {
+      return handleDeviceError(request, reply, error, '联网管理模式更新失败')
     }
   })
 

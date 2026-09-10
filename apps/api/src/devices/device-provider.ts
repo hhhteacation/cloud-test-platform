@@ -6,8 +6,9 @@ import type { DeviceDiscoveryCandidate, DevicePlatform, DeviceConnectionKind } f
  */
 export interface DeviceDiscoveryProvider {
   readonly platform: DevicePlatform
-  discover(): Promise<DeviceDiscoveryCandidate[]>
-  discoverNetwork?(): Promise<DeviceDiscoveryCandidate[]>
+  discover(options?: { signal?: AbortSignal }): Promise<DeviceDiscoveryCandidate[]>
+  discoverNetwork?(options?: { signal?: AbortSignal }): Promise<DeviceDiscoveryCandidate[]>
+  probeNetwork?(host: string, port: number, options?: { signal?: AbortSignal }): Promise<boolean>
   connectNetwork?(host: string, port: number, options?: { signal?: AbortSignal }): Promise<DeviceDiscoveryCandidate>
   disconnect?(serial: string): Promise<void>
 }

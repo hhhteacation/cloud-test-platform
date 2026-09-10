@@ -153,6 +153,7 @@ export class VideoExecutionStore {
 
   setState(input: {
     videoRunResultId: string
+    attemptId?: string
     runStatus?: RunStatus
     phase?: DeviceRunPhase
     progress?: number
@@ -183,11 +184,39 @@ export class VideoExecutionStore {
       ? asString(current.execution_failure_json) || null
       : serializeExecutionFailure(failure)
 
-    this.db.prepare(`
+    const updated = this.db.prepare(`
       UPDATE video_run_results SET status = ?, phase = ?, progress = ?,
         failure_code = ?, failure_message = ?, execution_status = ?, execution_failure_code = ?,
         execution_failure_json = ?, started_at = ?, finished_at = ?
       WHERE id = ?
+        AND (
+          ? IS NULL
+          OR EXISTS (
+            SELECT 1
+            FROM video_run_attempts AS attempt
+            WHERE attempt.id = ?
+              AND attempt.video_run_result_id = video_run_results.id
+              AND attempt.status = 'running'
+              AND attempt.attempt_number = (
+                SELECT MAX(latest.attempt_number)
+                FROM video_run_attempts AS latest
+                WHERE latest.video_run_result_id = video_run_results.id
+              )
+              AND (
+                COALESCE(attempt.connection_kind, '') <> 'network'
+                OR EXISTS (
+                  SELECT 1
+                  FROM device_runs
+                  JOIN device_connection_state
+                    ON device_connection_state.device_id = device_runs.device_id
+                  WHERE device_runs.id = video_run_results.device_run_id
+                    AND device_connection_state.observed_network_state = 'online'
+                    AND device_connection_state.active_endpoint_id = attempt.endpoint_id
+                    AND device_connection_state.connection_generation = attempt.endpoint_generation
+                )
+              )
+          )
+        )
     `).run(
       input.runStatus ?? asString(current.status),
       phase,
@@ -202,8 +231,13 @@ export class VideoExecutionStore {
       input.started ? timestamp : asString(current.started_at) || null,
       input.finished ? timestamp : asString(current.finished_at) || null,
       input.videoRunResultId,
+      input.attemptId ?? null,
+      input.attemptId ?? null,
     )
-    this.onResultStateChanged(asString(current.task_id), asString(current.device_run_id))
+    if (updated.changes > 0) {
+      this.onResultStateChanged(asString(current.task_id), asString(current.device_run_id))
+    }
+    return updated.changes === 1
   }
 
   blockRemaining(input: {
@@ -264,6 +298,16 @@ export class VideoExecutionStore {
     finishedAt?: string
   } = {}): VideoRunAttemptView {
     if (!this.getResult(videoRunResultId)) throw new Error(`视频执行结果 ${videoRunResultId} 不存在`)
+    const connection = this.db.prepare(`
+      SELECT device_runs.endpoint_id, device_runs.connection_kind, device_runs.adb_serial,
+             device_endpoints.transport_type,
+             COALESCE(device_connection_state.connection_generation, 0) AS endpoint_generation
+      FROM video_run_results
+      JOIN device_runs ON device_runs.id = video_run_results.device_run_id
+      LEFT JOIN device_endpoints ON device_endpoints.id = device_runs.endpoint_id
+      LEFT JOIN device_connection_state ON device_connection_state.device_id = device_runs.device_id
+      WHERE video_run_results.id = ?
+    `).get(videoRunResultId) as Row
     const row = this.db.prepare(`
       SELECT COALESCE(MAX(attempt_number), 0) + 1 AS attempt_number
       FROM video_run_attempts
@@ -276,12 +320,21 @@ export class VideoExecutionStore {
       INSERT INTO video_run_attempts (
         id, video_run_result_id, attempt_number, status,
         failure_code, failure_message, execution_failure_json,
-        evidence_directory, started_at, finished_at, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        evidence_directory, endpoint_id, connection_kind, network_transport,
+        adb_serial, endpoint_generation, started_at, finished_at, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id, videoRunResultId, attemptNumber, input.status ?? 'running',
       input.failureCode ?? null, input.failureMessage ?? null, input.executionFailureJson ?? null,
-      input.evidenceDirectory ?? null, input.startedAt ?? createdAt, input.finishedAt ?? null, createdAt,
+      input.evidenceDirectory ?? null,
+      asString(connection.endpoint_id) || null,
+      asString(connection.connection_kind) || null,
+      asString(connection.connection_kind) === 'network'
+        ? (asString(connection.transport_type) || 'tcp_legacy')
+        : null,
+      asString(connection.adb_serial) || null,
+      asNumber(connection.endpoint_generation),
+      input.startedAt ?? createdAt, input.finishedAt ?? null, createdAt,
     )
     return this.listAttempts(videoRunResultId).find((attempt) => attempt.id === id)!
   }
@@ -295,6 +348,24 @@ export class VideoExecutionStore {
       UPDATE video_run_attempts
       SET status = ?, failure_code = ?, failure_message = ?, execution_failure_json = ?, finished_at = ?
       WHERE id = ? AND status = 'running'
+        AND attempt_number = (
+          SELECT MAX(latest.attempt_number)
+          FROM video_run_attempts AS latest
+          WHERE latest.video_run_result_id = video_run_attempts.video_run_result_id
+        )
+        AND (
+          COALESCE(connection_kind, '') <> 'network'
+          OR EXISTS (
+            SELECT 1
+            FROM video_run_results
+            JOIN device_runs ON device_runs.id = video_run_results.device_run_id
+            JOIN device_connection_state ON device_connection_state.device_id = device_runs.device_id
+            WHERE video_run_results.id = video_run_attempts.video_run_result_id
+              AND device_connection_state.observed_network_state = 'online'
+              AND device_connection_state.active_endpoint_id = video_run_attempts.endpoint_id
+              AND device_connection_state.connection_generation = video_run_attempts.endpoint_generation
+          )
+        )
     `).run(
       input.status,
       input.failure?.code ?? null,
@@ -303,23 +374,73 @@ export class VideoExecutionStore {
       input.finishedAt ?? now(),
       attemptId,
     )
-    return result.changes === 1
+    if (result.changes === 1) return true
+
+    const staleFailure = createExecutionFailure({
+      code: 'STALE_DEVICE_LEASE',
+      phase: 'validating_device',
+      message: 'Attempt 的设备 Lease 或联网 Endpoint generation 已过期，已拒绝迟到终态',
+    })
+    this.db.prepare(`
+      UPDATE video_run_attempts
+      SET status = 'blocked', failure_code = ?, failure_message = ?,
+          execution_failure_json = ?, finished_at = ?
+      WHERE id = ? AND status = 'running'
+    `).run(
+      staleFailure.code,
+      staleFailure.message,
+      serializeExecutionFailure(staleFailure),
+      input.finishedAt ?? now(),
+      attemptId,
+    )
+    return false
   }
 
-  recordMediaIntegrity(videoRunResultId: string, result: MediaIntegrityResult) {
+  recordMediaIntegrity(videoRunResultId: string, result: MediaIntegrityResult, attemptId?: string) {
     const current = this.getResult(videoRunResultId)
     if (!current) throw new Error(`视频执行结果 ${videoRunResultId} 不存在`)
-    this.db.prepare(`
+    const updated = this.db.prepare(`
       UPDATE video_run_results
       SET media_integrity_status = ?, media_integrity_failure_code = ?, media_metadata = ?
       WHERE id = ?
+        AND (
+          ? IS NULL
+          OR EXISTS (
+            SELECT 1
+            FROM video_run_attempts AS attempt
+            WHERE attempt.id = ?
+              AND attempt.video_run_result_id = video_run_results.id
+              AND attempt.status = 'running'
+              AND attempt.attempt_number = (
+                SELECT MAX(latest.attempt_number)
+                FROM video_run_attempts AS latest
+                WHERE latest.video_run_result_id = video_run_results.id
+              )
+              AND (
+                COALESCE(attempt.connection_kind, '') <> 'network'
+                OR EXISTS (
+                  SELECT 1
+                  FROM device_runs
+                  JOIN device_connection_state
+                    ON device_connection_state.device_id = device_runs.device_id
+                  WHERE device_runs.id = video_run_results.device_run_id
+                    AND device_connection_state.observed_network_state = 'online'
+                    AND device_connection_state.active_endpoint_id = attempt.endpoint_id
+                    AND device_connection_state.connection_generation = attempt.endpoint_generation
+                )
+              )
+          )
+        )
     `).run(
       result.status,
       result.failureCode ?? null,
       result.metadata ? JSON.stringify(result.metadata) : null,
       videoRunResultId,
+      attemptId ?? null,
+      attemptId ?? null,
     )
-    this.onResultStateChanged(current.taskId, current.deviceRunId)
+    if (updated.changes > 0) this.onResultStateChanged(current.taskId, current.deviceRunId)
+    return updated.changes === 1
   }
 
   listAttempts(videoRunResultId: string): VideoRunAttemptView[] {
@@ -334,6 +455,11 @@ export class VideoExecutionStore {
       status: asString(row.status) as RunStatus,
       failureCode: asString(row.failure_code) || undefined,
       failureMessage: asString(row.failure_message) || undefined,
+      endpointId: asString(row.endpoint_id) || undefined,
+      connectionKind: (asString(row.connection_kind) || undefined) as VideoRunAttemptView['connectionKind'],
+      networkTransport: (asString(row.network_transport) || undefined) as VideoRunAttemptView['networkTransport'],
+      adbSerial: asString(row.adb_serial) || undefined,
+      endpointGeneration: asNumber(row.endpoint_generation),
       evidenceDirectory: asString(row.evidence_directory) || undefined,
       startedAt: asString(row.started_at) || undefined,
       finishedAt: asString(row.finished_at) || undefined,

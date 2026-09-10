@@ -51,17 +51,46 @@ export class AuditStore {
     )
   }
 
-  upsertVideoCheck(runId: string, videoRunResultId: string, check: CheckResult) {
+  upsertVideoCheck(runId: string, videoRunResultId: string, check: CheckResult, attemptId?: string) {
     const timestamp = now()
     const updated = this.db.prepare(`
       UPDATE check_results
       SET name = ?, status = ?, duration_ms = ?, message = ?, updated_at = ?
       WHERE device_run_id = ? AND video_run_result_id = ? AND check_key = ?
+        AND (
+          ? IS NULL
+          OR EXISTS (
+            SELECT 1
+            FROM video_run_attempts AS attempt
+            JOIN video_run_results ON video_run_results.id = attempt.video_run_result_id
+            WHERE attempt.id = ?
+              AND attempt.video_run_result_id = check_results.video_run_result_id
+              AND attempt.status = 'running'
+              AND attempt.attempt_number = (
+                SELECT MAX(latest.attempt_number)
+                FROM video_run_attempts AS latest
+                WHERE latest.video_run_result_id = attempt.video_run_result_id
+              )
+              AND (
+                COALESCE(attempt.connection_kind, '') <> 'network'
+                OR EXISTS (
+                  SELECT 1
+                  FROM device_runs
+                  JOIN device_connection_state
+                    ON device_connection_state.device_id = device_runs.device_id
+                  WHERE device_runs.id = video_run_results.device_run_id
+                    AND device_connection_state.observed_network_state = 'online'
+                    AND device_connection_state.active_endpoint_id = attempt.endpoint_id
+                    AND device_connection_state.connection_generation = attempt.endpoint_generation
+                )
+              )
+          )
+        )
     `).run(
       check.name, check.status, check.durationMs ?? null, check.message ?? null,
-      timestamp, runId, videoRunResultId, check.key,
+      timestamp, runId, videoRunResultId, check.key, attemptId ?? null, attemptId ?? null,
     )
-    if (updated.changes > 0) return
+    if (updated.changes > 0) return true
 
     const inserted = this.db.prepare(`
       INSERT INTO check_results (
@@ -71,12 +100,44 @@ export class AuditStore {
       SELECT ?, ?, id, ?, ?, ?, ?, ?, ?
       FROM video_run_results
       WHERE id = ? AND device_run_id = ?
+        AND (
+          ? IS NULL
+          OR EXISTS (
+            SELECT 1
+            FROM video_run_attempts AS attempt
+            WHERE attempt.id = ?
+              AND attempt.video_run_result_id = video_run_results.id
+              AND attempt.status = 'running'
+              AND attempt.attempt_number = (
+                SELECT MAX(latest.attempt_number)
+                FROM video_run_attempts AS latest
+                WHERE latest.video_run_result_id = video_run_results.id
+              )
+              AND (
+                COALESCE(attempt.connection_kind, '') <> 'network'
+                OR EXISTS (
+                  SELECT 1
+                  FROM device_runs
+                  JOIN device_connection_state
+                    ON device_connection_state.device_id = device_runs.device_id
+                  WHERE device_runs.id = video_run_results.device_run_id
+                    AND device_connection_state.observed_network_state = 'online'
+                    AND device_connection_state.active_endpoint_id = attempt.endpoint_id
+                    AND device_connection_state.connection_generation = attempt.endpoint_generation
+                )
+              )
+          )
+        )
     `).run(
       `check-${randomUUID()}`, runId, check.key, check.name, check.status,
       check.durationMs ?? null, check.message ?? null, timestamp,
-      videoRunResultId, runId,
+      videoRunResultId, runId, attemptId ?? null, attemptId ?? null,
     )
-    if (inserted.changes !== 1) throw new Error(`视频执行结果 ${videoRunResultId} 不属于设备运行 ${runId}`)
+    if (inserted.changes === 1) return true
+    if (this.db.prepare('SELECT 1 FROM video_run_results WHERE id = ? AND device_run_id = ?').get(videoRunResultId, runId)) {
+      return false
+    }
+    throw new Error(`视频执行结果 ${videoRunResultId} 不属于设备运行 ${runId}`)
   }
 
   /** Compatibility view: returns every check currently attached to a DeviceRun. */

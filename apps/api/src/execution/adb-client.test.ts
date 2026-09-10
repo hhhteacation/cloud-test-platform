@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { AdbDeviceClient, type AdbObservation } from './adb-client.js'
+import { AdbDeviceClient, type AdbCommandHealthEvidence, type AdbObservation } from './adb-client.js'
 import { ProcessError, type ProcessRunner } from '../process.js'
 
 const temporaryDirectories: string[] = []
@@ -43,6 +43,22 @@ describe('AdbDeviceClient package detection', () => {
 
 
 describe('AdbDeviceClient observations', () => {
+  it('does not reinterpret an aborted connection observation as device offline', async () => {
+    const controller = new AbortController()
+    const runner: ProcessRunner = {
+      async run() {
+        controller.abort(new DOMException('Attempt deadline reached', 'AbortError'))
+        throw controller.signal.reason
+      },
+    }
+    const device = new AdbDeviceClient('/adb', 'serial-1', runner)
+
+    await expect(device.connectionStatus(controller.signal)).rejects.toMatchObject({
+      name: 'AbortError',
+      message: 'Attempt deadline reached',
+    })
+  })
+
   it('distinguishes an absent path from an ADB observation failure', async () => {
     const results = [
       { code: 1, stdout: '', stderr: 'stat: /missing.mp4: No such file or directory' },
@@ -98,6 +114,108 @@ describe('AdbDeviceClient observations', () => {
     await expect(device.isPackageRunning('com.example.app', controller.signal)).rejects.toMatchObject({
       name: 'AbortError',
     })
+  })
+})
+
+describe('AdbDeviceClient passive connection health', () => {
+  it('records a successful business command as passive health evidence', async () => {
+    const evidence: AdbCommandHealthEvidence[] = []
+    const runner: ProcessRunner = {
+      async run() { return { code: 0, stdout: 'ok', stderr: '' } },
+    }
+    const device = new AdbDeviceClient('/adb', '192.0.2.10:5555', runner, {
+      onHealthEvidence: (item) => evidence.push(item),
+    })
+
+    await device.run(['shell', 'echo', 'ok'], new AbortController().signal)
+
+    expect(evidence).toEqual([{ kind: 'healthy' }])
+  })
+
+  it('does not confuse an application or permission failure with a transport failure', async () => {
+    const evidence: AdbCommandHealthEvidence[] = []
+    const runner: ProcessRunner = {
+      async run(command, args) {
+        throw new ProcessError('permission denied', command, args, {
+          code: 1, stdout: '', stderr: 'java.lang.SecurityException: permission denied',
+        })
+      },
+    }
+    const device = new AdbDeviceClient('/adb', '192.0.2.10:5555', runner, {
+      onHealthEvidence: (item) => evidence.push(item),
+    })
+
+    await expect(device.run(['shell', 'pm', 'grant'], new AbortController().signal)).rejects.toThrow()
+
+    expect(evidence).toEqual([{ kind: 'healthy' }])
+  })
+
+  it('records only an explicit ADB transport failure as unhealthy evidence', async () => {
+    const evidence: AdbCommandHealthEvidence[] = []
+    const runner: ProcessRunner = {
+      async run(command, args) {
+        throw new ProcessError('device offline', command, args, {
+          code: 1, stdout: '', stderr: 'error: device offline',
+        })
+      },
+    }
+    const device = new AdbDeviceClient('/adb', '192.0.2.10:5555', runner, {
+      onHealthEvidence: (item) => evidence.push(item),
+    })
+
+    await expect(device.run(['push', 'input.mp4', '/sdcard/input.mp4'], new AbortController().signal)).rejects.toThrow()
+
+    expect(evidence).toEqual([{ kind: 'transport_failed', failureCode: 'ADB_DEVICE_OFFLINE' }])
+  })
+
+  it('does not publish health evidence after cancellation', async () => {
+    const evidence: AdbCommandHealthEvidence[] = []
+    const controller = new AbortController()
+    const runner: ProcessRunner = {
+      async run() {
+        controller.abort()
+        throw new DOMException('cancelled', 'AbortError')
+      },
+    }
+    const device = new AdbDeviceClient('/adb', '192.0.2.10:5555', runner, {
+      onHealthEvidence: (item) => evidence.push(item),
+    })
+
+    await expect(device.run(['shell', 'echo', 'ok'], controller.signal)).rejects.toThrow()
+
+    expect(evidence).toEqual([])
+  })
+
+  it('keeps a generic slow-command timeout neutral because it does not prove transport loss', async () => {
+    const evidence: AdbCommandHealthEvidence[] = []
+    const runner: ProcessRunner = {
+      async run(command, args) {
+        throw new ProcessError('命令执行超时：adb', command, args, {
+          code: -1, stdout: '', stderr: '',
+        })
+      },
+    }
+    const device = new AdbDeviceClient('/adb', '192.0.2.10:5555', runner, {
+      onHealthEvidence: (item) => evidence.push(item),
+    })
+
+    await expect(device.run(['shell', 'slow-command'], new AbortController().signal)).rejects.toThrow()
+
+    expect(evidence).toEqual([])
+  })
+
+  it('does not let telemetry callback failures break the ADB business command', async () => {
+    const runner: ProcessRunner = {
+      async run() { return { code: 0, stdout: 'ok', stderr: '' } },
+    }
+    const device = new AdbDeviceClient('/adb', '192.0.2.10:5555', runner, {
+      onHealthEvidence: () => { throw new Error('telemetry unavailable') },
+    })
+
+    await expect(device.run(
+      ['shell', 'echo', 'ok'],
+      new AbortController().signal,
+    )).resolves.toMatchObject({ code: 0, stdout: 'ok' })
   })
 })
 
