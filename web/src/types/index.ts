@@ -304,6 +304,10 @@ export interface VideoRunResult {
   mediaIntegrityStatus: MediaIntegrityStatus
   mediaIntegrityFailureCode?: string
   mediaMetadata?: MediaMetadata
+  /** 按视频下载该结果最新 Attempt 的 logcat；尚未执行的视频没有该地址。 */
+  logcatUrl?: string
+  /** 按视频查看该结果最新 Attempt 的最终截图；尚未执行的视频没有该地址。 */
+  screenshotUrl?: string
 }
 
 export interface DeviceRunResult {
