@@ -82,7 +82,11 @@ describe('createTaskModel', () => {
     const client: TestPlatformClient = {
       mode: 'real',
       listDevices: vi.fn(), refreshDevices: vi.fn(), discoverDevices: vi.fn(), discoverNetworkDevices: vi.fn(), registerDevice: vi.fn(),
+      listNetworkObservationDecisions: vi.fn(),
+      getManagedObservationAdoptionStatus: vi.fn(),
+      recoverNetworkConnection: vi.fn(),
       connectNetworkDevice: vi.fn(), disconnectNetworkDevice: vi.fn(), refreshNetworkDevice: vi.fn(), removeNetworkDevice: vi.fn(),
+      setNetworkManagementMode: vi.fn(),
       startNetworkConnectionOperation: vi.fn(), getNetworkConnectionOperation: vi.fn(), cancelNetworkConnectionOperation: vi.fn(),
       uploadArtifact: vi.fn(async (uploadedFile, kind) => {
         if (kind === 'video') uploadedVideoNames.push(uploadedFile.name)

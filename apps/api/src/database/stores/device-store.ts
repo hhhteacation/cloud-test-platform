@@ -80,7 +80,8 @@ export class DeviceStore {
       INSERT INTO device_endpoints
         (id, device_id, kind, adb_serial, status, last_seen_at, created_at, updated_at)
       VALUES (?, ?, 'usb', ?, 'online', ?, ?, ?)
-      ON CONFLICT(device_id, kind) DO UPDATE SET
+      ON CONFLICT(id) DO UPDATE SET
+        device_id = excluded.device_id,
         adb_serial = excluded.adb_serial, status = 'online',
         last_seen_at = excluded.last_seen_at, last_error = NULL, updated_at = excluded.updated_at
     `).run(`endpoint-usb-${device.id}`, device.id, input.serial, timestamp, timestamp, timestamp)

@@ -6,12 +6,18 @@ import type {
   NetworkConnectionOperationItem,
   NetworkConnectionOperationItemStatus,
   NetworkConnectionOperationStatus,
+  NetworkTransportType,
 } from '../../types.js'
 import { asNumber, asString, now, type Row } from './shared.js'
 
 export interface CreateNetworkConnectionOperationInput {
   id?: string
-  items: Array<Pick<NetworkConnectionOperationItem, 'deviceId' | 'endpointId' | 'host' | 'port'>>
+  items: Array<
+    Pick<
+      NetworkConnectionOperationItem,
+      'deviceId' | 'endpointId' | 'host' | 'port' | 'transportType' | 'serviceInstance'
+    >
+  >
 }
 
 export class ActiveNetworkConnectionOperationError extends Error {
@@ -30,6 +36,8 @@ function mapItem(row: Row): NetworkConnectionOperationItem {
     operationId: asString(row.operation_id),
     deviceId: asString(row.device_id),
     endpointId: asString(row.endpoint_id),
+    transportType: optionalString(row.transport_type) as NetworkTransportType | undefined,
+    serviceInstance: optionalString(row.service_instance),
     host: asString(row.host),
     port: asNumber(row.port),
     status: asString(row.status) as NetworkConnectionOperationItemStatus,
@@ -84,11 +92,20 @@ export class NetworkConnectionOperationStore {
       `).run(id, input.items.length, timestamp)
       const insert = this.db.prepare(`
         INSERT INTO network_connection_operation_items
-          (id, operation_id, device_id, endpoint_id, host, port, status)
-        VALUES (?, ?, ?, ?, ?, ?, 'pending')
+          (id, operation_id, device_id, endpoint_id, transport_type, service_instance, host, port, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
       `)
       for (const item of input.items) {
-        insert.run(`network-connect-item-${randomUUID()}`, id, item.deviceId, item.endpointId, item.host, item.port)
+        insert.run(
+          `network-connect-item-${randomUUID()}`,
+          id,
+          item.deviceId,
+          item.endpointId,
+          item.transportType ?? null,
+          item.serviceInstance ?? null,
+          item.host,
+          item.port,
+        )
       }
       this.db.exec('COMMIT')
     } catch (error) {

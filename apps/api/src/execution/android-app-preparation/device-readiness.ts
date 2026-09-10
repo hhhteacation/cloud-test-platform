@@ -235,7 +235,7 @@ export class AndroidDeviceReadiness {
   }
 
   async prepare(signal: AbortSignal): Promise<DeviceReadinessObservation> {
-    const status = await this.device.connectionStatus()
+    const status = await this.device.connectionStatus(signal)
     if (status === 'unauthorized') {
       throw new TaskExecutionError('设备尚未授权此电脑，请在手机上允许 USB 调试授权。', 'DEVICE_UNAUTHORIZED')
     }

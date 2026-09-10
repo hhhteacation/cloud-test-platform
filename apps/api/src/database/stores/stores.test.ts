@@ -6,6 +6,7 @@ import { runDatabaseMigrations } from '../migrations/index.js'
 import { ArtifactStore } from './artifact-store.js'
 import { AuditStore } from './audit-store.js'
 import { DeviceEndpointStore } from './device-endpoint-store.js'
+import { DeviceConnectionStateStore } from './device-connection-state-store.js'
 import { DeviceRunStore } from './device-run-store.js'
 import { DeviceStore } from './device-store.js'
 import { NetworkConnectionOperationStore } from './network-connection-operation-store.js'
@@ -44,8 +45,24 @@ describe('领域 Store', () => {
       deviceId: device.id, kind: 'network', adbSerial: '192.168.1.20:5555',
       host: '192.168.1.20', port: 5555, status: 'online',
     })
-    expect(endpoints.upsert({ ...network, adbSerial: '192.168.1.21:5555', host: '192.168.1.21', status: 'offline' }).id).toBe(network.id)
+    const secondTcp = endpoints.upsert({ ...network, adbSerial: '192.168.1.21:5555', host: '192.168.1.21', status: 'offline' })
+    expect(secondTcp.id).toBe(network.id)
+    expect(secondTcp).toMatchObject({ host: '192.168.1.21', port: 5555, transportType: 'tcp_legacy' })
     expect(endpoints.listForDevice(device.id)).toHaveLength(2)
+    const tls = endpoints.upsert({
+      deviceId: device.id, kind: 'network', transportType: 'wireless_tls',
+      adbSerial: '192.168.1.20:37123', host: '192.168.1.20', port: 37123,
+      serviceInstance: 'adb-test-tls', pairingState: 'observed_working', priority: 10, status: 'online',
+    })
+    expect(tls).toMatchObject({
+      transportType: 'wireless_tls', serviceInstance: 'adb-test-tls',
+      pairingState: 'observed_working', priority: 10,
+    })
+    expect(endpoints.getByDeviceAndKind(device.id, 'network')).toMatchObject({
+      id: tls.id,
+      transportType: 'wireless_tls',
+      status: 'online',
+    })
     expect(artifacts.get(apk.id)?.packageName).toBe('com.sdktest.platform')
 
     const task = tasks.create({
@@ -89,6 +106,47 @@ describe('领域 Store', () => {
     expect(endpoints.remove(network.id)).toBe(true)
     expect(endpoints.get(network.id)).toBeUndefined()
 
+    db.close()
+  })
+
+  it('批量联网操作项保留 TLS 传输和 mDNS service instance 快照', () => {
+    const db = new DatabaseSync(':memory:')
+    db.exec('PRAGMA foreign_keys = ON')
+    runDatabaseMigrations(db, ':memory:')
+    const store = new NetworkConnectionOperationStore(db)
+
+    const operation = store.create({
+      id: 'network-connect-transport-snapshot',
+      items: [{
+        deviceId: 'device-tls',
+        endpointId: 'endpoint-tls',
+        host: '192.0.2.17',
+        port: 42747,
+        transportType: 'wireless_tls',
+        serviceInstance: 'adb-SERIAL-017._adb-tls-connect._tcp.local',
+      }],
+    })
+
+    expect(operation.items[0]).toMatchObject({
+      host: '192.0.2.17',
+      port: 42747,
+      transportType: 'wireless_tls',
+      serviceInstance: 'adb-SERIAL-017._adb-tls-connect._tcp.local',
+    })
+    expect(
+      db
+        .prepare(
+          `
+      SELECT transport_type, service_instance
+      FROM network_connection_operation_items
+      WHERE operation_id = 'network-connect-transport-snapshot'
+    `,
+        )
+        .get(),
+    ).toEqual({
+      transport_type: 'wireless_tls',
+      service_instance: 'adb-SERIAL-017._adb-tls-connect._tcp.local',
+    })
     db.close()
   })
 
@@ -193,6 +251,8 @@ describe('多视频任务领域模型', () => {
     runDatabaseMigrations(db, ':memory:')
     const artifacts = new ArtifactStore(db)
     const devices = new DeviceStore(db)
+    const endpoints = new DeviceEndpointStore(db)
+    const connectionStates = new DeviceConnectionStateStore(db)
     const audit = new AuditStore(db)
     const runs = new DeviceRunStore(db, audit)
     const videoExecutions = new VideoExecutionStore(db)
@@ -209,7 +269,10 @@ describe('多视频任务领域模型', () => {
       id, serial: `serial-${id}`, name: id, manufacturer: 'Test', model: 'Model',
       osVersion: 'Android 14', apiLevel: 34, architecture: 'arm64-v8a',
     })
-    return { db, artifacts, audit, runs, videoExecutions, tasks, apk, addVideo, addDevice }
+    return {
+      db, artifacts, audit, runs, videoExecutions, tasks, endpoints, connectionStates,
+      apk, addVideo, addDevice,
+    }
   }
 
   it('按用户顺序创建 TaskVideo，并生成 视频数 × 设备数 的 queued 结果矩阵', () => {
@@ -445,6 +508,139 @@ describe('多视频任务领域模型', () => {
     expect(refreshed.videoRuns[task.videos[2].id][device.id]).toMatchObject({
       status: 'blocked', failureCode: 'DEVICE_OFFLINE', attempts: [],
     })
+    context.db.close()
+  })
+
+  it('联网 generation 变化后拒绝旧 Attempt 迟到终态，只允许新 Lease 完成', () => {
+    const context = fixture()
+    const video = context.addVideo('lease-fence.mp4')
+    const device = context.addDevice('device-lease-fence')
+    const endpoint = context.endpoints.upsert({
+      deviceId: device.id,
+      kind: 'network',
+      adbSerial: '192.0.2.30:5555',
+      host: '192.0.2.30',
+      port: 5555,
+      status: 'online',
+    })
+    const task = context.tasks.create({
+      name: 'Attempt Lease Fence', apkArtifactId: context.apk.id, videoArtifactId: video.id,
+      deviceIds: [device.id], timeoutSeconds: 300, connectionMode: 'network',
+    })
+    const run = task.runs[device.id]
+    expect(context.runs.assignExecutionEndpoint(
+      { taskId: task.id, runId: run.id, deviceId: device.id },
+      { endpointId: endpoint.id, connectionKind: 'network', adbSerial: endpoint.adbSerial },
+    )).toBe(true)
+
+    const firstConnection = context.connectionStates.begin({
+      deviceId: device.id,
+      operationId: 'connection-generation-1',
+      deadlineAt: '2099-01-01T00:00:00.000Z',
+    })
+    expect(context.connectionStates.commit({
+      deviceId: device.id,
+      operationId: 'connection-generation-1',
+      generation: firstConnection.connectionGeneration,
+      observedState: 'online',
+      desiredState: 'connected',
+      activeEndpointId: endpoint.id,
+    })).toBe(true)
+    const result = context.videoExecutions.listExecutionsForDeviceRun(task.id, run.id)[0]
+    const oldAttempt = context.videoExecutions.createAttempt(result.videoRunResultId)
+
+    const secondConnection = context.connectionStates.begin({
+      deviceId: device.id,
+      operationId: 'connection-generation-2',
+      deadlineAt: '2099-01-01T00:00:00.000Z',
+    })
+    expect(context.connectionStates.commit({
+      deviceId: device.id,
+      operationId: 'connection-generation-2',
+      generation: secondConnection.connectionGeneration,
+      observedState: 'online',
+      desiredState: 'connected',
+      activeEndpointId: endpoint.id,
+    })).toBe(true)
+    const currentAttempt = context.videoExecutions.createAttempt(result.videoRunResultId)
+
+    expect(context.videoExecutions.recordMediaIntegrity(result.videoRunResultId, {
+      status: 'passed',
+      message: 'late media result',
+      metadata: { sizeBytes: 99, hasAudio: false },
+    }, oldAttempt.id)).toBe(false)
+    expect(context.audit.upsertVideoCheck(run.id, result.videoRunResultId, {
+      key: 'late-check', name: '迟到检查', status: 'passed',
+    }, oldAttempt.id)).toBe(false)
+    expect(context.artifacts.addVideoOutput({
+      videoRunResultId: result.videoRunResultId,
+      attemptId: oldAttempt.id,
+      storagePath: '/tmp/late-output.mp4',
+      sizeBytes: 99,
+      sha256: 'late-output',
+    })).toBeUndefined()
+    expect(context.videoExecutions.getResult(result.videoRunResultId)).toMatchObject({
+      mediaIntegrityStatus: 'not_checked',
+    })
+    expect(context.audit.listChecksForVideoResult(result.videoRunResultId)).toEqual([])
+    expect(context.artifacts.listOutputsForVideoResult(result.videoRunResultId)).toEqual([])
+
+    expect(context.videoExecutions.recordMediaIntegrity(result.videoRunResultId, {
+      status: 'passed',
+      message: 'current media result',
+      metadata: { sizeBytes: 42, hasAudio: false },
+    }, currentAttempt.id)).toBe(true)
+    expect(context.audit.upsertVideoCheck(run.id, result.videoRunResultId, {
+      key: 'current-check', name: '当前检查', status: 'passed',
+    }, currentAttempt.id)).toBe(true)
+    expect(context.artifacts.addVideoOutput({
+      videoRunResultId: result.videoRunResultId,
+      attemptId: currentAttempt.id,
+      storagePath: '/tmp/current-output.mp4',
+      sizeBytes: 42,
+      sha256: 'current-output',
+    })).toMatchObject({ videoRunResultId: result.videoRunResultId })
+
+    expect(context.videoExecutions.setState({
+      videoRunResultId: result.videoRunResultId,
+      attemptId: oldAttempt.id,
+      runStatus: 'passed',
+      phase: 'completed',
+      progress: 100,
+      finished: true,
+    })).toBe(false)
+    expect(context.videoExecutions.getResult(result.videoRunResultId)).toMatchObject({
+      status: 'queued',
+      progress: 0,
+    })
+    expect(context.videoExecutions.setState({
+      videoRunResultId: result.videoRunResultId,
+      attemptId: currentAttempt.id,
+      runStatus: 'running',
+      phase: 'processing',
+      progress: 42,
+      started: true,
+    })).toBe(true)
+    expect(context.videoExecutions.getResult(result.videoRunResultId)).toMatchObject({
+      status: 'running',
+      progress: 42,
+    })
+
+    expect(context.videoExecutions.finishAttempt(oldAttempt.id, { status: 'passed' })).toBe(false)
+    expect(context.videoExecutions.finishAttempt(currentAttempt.id, { status: 'passed' })).toBe(true)
+    expect(context.videoExecutions.listAttempts(result.videoRunResultId)).toEqual([
+      expect.objectContaining({
+        id: oldAttempt.id,
+        status: 'blocked',
+        failureCode: 'STALE_DEVICE_LEASE',
+        endpointGeneration: firstConnection.connectionGeneration,
+      }),
+      expect.objectContaining({
+        id: currentAttempt.id,
+        status: 'passed',
+        endpointGeneration: secondConnection.connectionGeneration,
+      }),
+    ])
     context.db.close()
   })
 

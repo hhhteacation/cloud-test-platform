@@ -14,6 +14,7 @@ export interface ApkDialogAutomationConfig {
    */
   unrecognizedGraceMs?: number
 }
+//ApkExecutionProtocol协议（接口定义）
 
 export interface ApkExecutionProtocol {
   id: string
@@ -95,7 +96,7 @@ export interface ApkExecutionPaths {
   remoteCompletionPath: string
   remoteResultFile?: string
 }
-
+//自研测试载体platform-carrier-v1协议定义
 const PLATFORM_CARRIER_PROTOCOL: ApkExecutionProtocol = {
   id: 'platform-carrier-v1',
   name: 'SDK Test Platform 测试载体协议 v1',
@@ -147,7 +148,7 @@ const PLATFORM_CARRIER_PROTOCOL: ApkExecutionProtocol = {
     description: '终止 ADB 子进程并执行 am force-stop com.sdktest.platform。',
   },
 }
-
+//morpho-video-postprocessor批处理协议定义
 const MORPHO_PROTOCOL: ApkExecutionProtocol = {
   id: 'morpho-video-postprocessor-batch-v2',
   name: 'Morpho VideoPostProcessor 批处理协议 v2',
@@ -173,6 +174,8 @@ const MORPHO_PROTOCOL: ApkExecutionProtocol = {
         'honor-magic-os-unreviewed-app-block-v1',
         'xiaomi-hyperos-package-installer-v1',
         'oplus-package-installer-v1',
+        'oplus-package-installer-risk-v2',
+        'oplus-package-installer-finish-v1',
         'android-runtime-permission-v1',
       ],
       timeoutMs: 120_000,
@@ -214,17 +217,25 @@ const MORPHO_PROTOCOL: ApkExecutionProtocol = {
   progress: {
     mode: 'logcat_pattern',
     description: '读取 MORPHO 日志中的启动、文件扫描、处理文件、Input、Output 和错误文本来映射平台进度。',
+    // logcat 的 tag 过滤是精确匹配且大小写敏感：App 壳的真实 tag 是全大写 MORPHO，
+    // 写成 'Morpho' 会一行都收不到（2026-09-09 真机实测确认）。
+    // MORPHO 只打业务骨架日志；处理过程细节（解码/编码/稳定器/降噪耗时）在
+    // MorphoVideoPProc/* 子 tag 下，性能分析依赖它们，必须逐个完整列出。
+    // denoise 测试版（VideoDenoiser Ver.2.0.1，feature=0xc）新增 denoiser 子 tag，
+    // 另有一条独立的 MorphoVideoStabilizer 版本横幅 tag（2026-09-09 真机确认）。
     logTag: 'MORPHO',
     logTags: [
       'MORPHO',
       'MorphoVideoPProc/Controller',
       'MorphoVideoPProc/Decoder',
+      'MorphoVideoPProc/denoiser',
       'MorphoVideoPProc/Encoder',
       'MorphoVideoPProc/Interface',
       'MorphoVideoPProc/Parser',
       'MorphoVideoPProc/Sensor',
       'MorphoVideoPProc/Stabilizer',
       'MorphoVideoPProc/WDR',
+      'MorphoVideoStabilizer',
     ],
   },
   completion: {

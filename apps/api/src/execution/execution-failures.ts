@@ -78,6 +78,7 @@ const failureDefinitions = {
   SDK_PROCESSING_FAILED: definition('business', 'conditional', 'probable'),
   SDK_START_FAILED: definition('protocol', 'conditional', 'confirmed'),
   SERVICE_RESTARTED: definition('infrastructure', 'safe', 'confirmed'),
+  STALE_DEVICE_LEASE: definition('infrastructure', 'safe', 'confirmed'),
   STARTUP_OBSERVATION_FAILED: definition('observation', 'conditional', 'confirmed'),
   STARTUP_OBSERVATION_INCOMPLETE: definition('observation', 'conditional', 'unknown'),
   TASK_CANCELLED: definition('cancelled', 'never', 'confirmed'),
