@@ -350,6 +350,32 @@ describe('多视频任务领域模型', () => {
     context.db.close()
   })
 
+  it('为带证据目录的视频结果生成按视频下载的 logcat/截图地址', () => {
+    const context = fixture()
+    const first = context.addVideo('first.mp4')
+    const second = context.addVideo('second.mp4')
+    const device = context.addDevice('device-evidence')
+    const task = context.tasks.create({
+      name: '证据地址', apkArtifactId: context.apk.id,
+      videoArtifactIds: [first.id, second.id], deviceIds: [device.id], timeoutSeconds: 300,
+    })
+    const run = task.runs[device.id]
+    const firstResult = task.videoRuns[task.videos[0].id][device.id]
+    context.videoExecutions.createAttempt(firstResult.id, {
+      evidenceDirectory: `/tmp/tasks/${task.id}/device-runs/${run.id}/videos/${task.videos[0].id}/attempts/1`,
+    })
+
+    const refreshed = context.tasks.get(task.id)!
+    const firstView = refreshed.videoRuns[task.videos[0].id][device.id]
+    expect(firstView.logcatUrl).toBe(`/api/tasks/${task.id}/device-runs/${run.id}/logcat?video=${task.videos[0].id}`)
+    expect(firstView.screenshotUrl).toBe(`/api/tasks/${task.id}/device-runs/${run.id}/screenshots/final?video=${task.videos[0].id}`)
+    expect(firstView.attempts[0].evidenceDirectory).toContain('attempts/1')
+    const secondView = refreshed.videoRuns[task.videos[1].id][device.id]
+    expect(secondView.logcatUrl).toBeUndefined()
+    expect(secondView.screenshotUrl).toBeUndefined()
+    context.db.close()
+  })
+
   it('按顺序提供设备视频执行上下文，并聚合视频状态、Attempt 和 blocked 传播', () => {
     const context = fixture()
     const first = context.addVideo('first.mp4')
