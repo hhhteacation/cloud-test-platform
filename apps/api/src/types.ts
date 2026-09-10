@@ -258,6 +258,8 @@ export interface VideoRunAttemptView {
   status: RunStatus;
   failureCode?: string;
   failureMessage?: string;
+  /** Attempt 证据目录的绝对路径；legacy 回填的 Attempt 可能没有。 */
+  evidenceDirectory?: string;
   endpointId?: string;
   connectionKind?: DeviceConnectionKind;
   networkTransport?: "tcp_legacy" | "wireless_tls";
@@ -292,6 +294,10 @@ export interface VideoRunResultView {
   mediaIntegrityStatus: MediaIntegrityStatus;
   mediaIntegrityFailureCode?: string;
   mediaMetadata?: MediaMetadata;
+  /** 按视频下载该结果最新 Attempt 的 logcat；仅在该 Attempt 记录了证据目录时提供。 */
+  logcatUrl?: string;
+  /** 按视频查看该结果最新 Attempt 的最终截图；仅在该 Attempt 记录了证据目录时提供。 */
+  screenshotUrl?: string;
 }
 
 export interface DeviceRunView {

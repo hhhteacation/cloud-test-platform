@@ -18,10 +18,14 @@ function config(tasksDir: string) {
   return { tasksDir } as AppConfig
 }
 
-function fakeDatabase(execution?: { deviceId: string }) {
+function fakeDatabase(execution?: { deviceId: string }, overrides: Record<string, unknown> = {}) {
   return {
     hasDeviceRun: (taskId: string, runId: string) => taskId === 'task-1' && runId === 'run-1',
     getDeviceRunExecution: () => execution,
+    getDeviceRunLatestAttemptEvidenceDirectory: () => undefined,
+    getVideoRunResultForDeviceRun: () => undefined,
+    getVideoResultLatestAttemptEvidenceDirectory: () => undefined,
+    ...overrides,
   } as never
 }
 
@@ -64,6 +68,89 @@ describe('evidence routes logcat download', () => {
 
     expect(response.statusCode).toBe(404)
     expect(response.json()).toMatchObject({ code: 'DEVICE_RUN_NOT_FOUND' })
+    await app.close()
+  })
+
+  it('falls back to the latest Attempt evidence directory for multi-video runs', async () => {
+    const tasksDir = await mkdtemp(path.join(os.tmpdir(), 'evidence-route-attempt-'))
+    directories.push(tasksDir)
+    const attemptDirectory = path.join(tasksDir, 'task-1', 'device-runs', 'run-1', 'videos', 'task-video-2', 'attempts', '1')
+    await mkdir(attemptDirectory, { recursive: true })
+    await writeFile(path.join(attemptDirectory, 'logcat.txt'), 'attempt log line\n')
+
+    const app = Fastify()
+    registerEvidenceRoutes(app, fakeDatabase({ deviceId: 'Pixel' }, {
+      getDeviceRunLatestAttemptEvidenceDirectory: () => attemptDirectory,
+    }), config(tasksDir))
+    const response = await app.inject({ method: 'GET', url: '/api/tasks/task-1/device-runs/run-1/logcat' })
+
+    expect(response.statusCode).toBe(200)
+    expect(response.body).toBe('attempt log line\n')
+    await app.close()
+  })
+
+  it('serves the requested video Attempt when ?video= is provided', async () => {
+    const tasksDir = await mkdtemp(path.join(os.tmpdir(), 'evidence-route-video-'))
+    directories.push(tasksDir)
+    const attemptDirectory = path.join(tasksDir, 'task-1', 'device-runs', 'run-1', 'videos', 'task-video-9', 'attempts', '2')
+    await mkdir(attemptDirectory, { recursive: true })
+    await writeFile(path.join(attemptDirectory, 'logcat.txt'), 'video attempt log\n')
+
+    const app = Fastify()
+    registerEvidenceRoutes(app, fakeDatabase({ deviceId: 'Pixel 8' }, {
+      getVideoRunResultForDeviceRun: (taskId: string, runId: string, taskVideoId: string) => {
+        expect([taskId, runId, taskVideoId]).toEqual(['task-1', 'run-1', 'task-video-9'])
+        return { id: 'video-run-9' }
+      },
+      getVideoResultLatestAttemptEvidenceDirectory: (videoRunResultId: string) => {
+        expect(videoRunResultId).toBe('video-run-9')
+        return attemptDirectory
+      },
+    }), config(tasksDir))
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/tasks/task-1/device-runs/run-1/logcat?video=task-video-9',
+    })
+
+    expect(response.statusCode).toBe(200)
+    expect(response.body).toBe('video attempt log\n')
+    expect(response.headers['content-disposition']).toBe('attachment; filename="logcat-Pixel_8-run-1-task-video-9.txt"')
+    await app.close()
+  })
+
+  it('ignores an Attempt evidence directory that escapes the run directory', async () => {
+    const tasksDir = await mkdtemp(path.join(os.tmpdir(), 'evidence-route-escape-'))
+    directories.push(tasksDir)
+    await writeFile(path.join(tasksDir, 'outside-logcat.txt'), 'must not be served')
+    await mkdir(path.join(tasksDir, 'task-1', 'device-runs', 'run-1'), { recursive: true })
+
+    const app = Fastify()
+    registerEvidenceRoutes(app, fakeDatabase({ deviceId: 'Pixel' }, {
+      getDeviceRunLatestAttemptEvidenceDirectory: () => tasksDir,
+    }), config(tasksDir))
+    const response = await app.inject({ method: 'GET', url: '/api/tasks/task-1/device-runs/run-1/logcat' })
+
+    expect(response.statusCode).toBe(404)
+    expect(response.json()).toMatchObject({ code: 'LOGCAT_NOT_FOUND' })
+    await app.close()
+  })
+
+  it('falls back to the latest Attempt screenshot for multi-video runs', async () => {
+    const tasksDir = await mkdtemp(path.join(os.tmpdir(), 'evidence-route-screenshot-'))
+    directories.push(tasksDir)
+    const screenshotDirectory = path.join(tasksDir, 'task-1', 'device-runs', 'run-1', 'videos', 'task-video-3', 'attempts', '1', 'screenshots')
+    await mkdir(screenshotDirectory, { recursive: true })
+    await writeFile(path.join(screenshotDirectory, 'final.png'), 'png-bytes')
+
+    const app = Fastify()
+    registerEvidenceRoutes(app, fakeDatabase({ deviceId: 'Pixel' }, {
+      getDeviceRunLatestAttemptEvidenceDirectory: () => path.dirname(screenshotDirectory),
+    }), config(tasksDir))
+    const response = await app.inject({ method: 'GET', url: '/api/tasks/task-1/device-runs/run-1/screenshots/final' })
+
+    expect(response.statusCode).toBe(200)
+    expect(response.body).toBe('png-bytes')
+    expect(response.headers['content-type']).toBe('image/png')
     await app.close()
   })
 })

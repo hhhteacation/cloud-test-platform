@@ -445,6 +445,12 @@ const XIAOMI_HYPEROS_PACKAGE_INSTALLER_PROFILE: DialogProfileDefinition = {
  * `com.oplus.appdetail` InstallGuideActivity until the user explicitly chooses
  * “继续安装”. Identity, manufacturer, system-window trust and at least two risk
  * features are still required before the controller may click.
+ *
+ * Two page variants are verified against real captures:
+ * - ColorOS 14（PKR110 等）额外渲染 `tv_risk_name`/`tv_risk_desc` 风险明细节点；
+ * - ColorOS 15（PJV110，Android 15）移除了这两个节点，改用 `nsv_content`/
+ *   `channel_source` 呈现同一段“检测结果：涉及敏感权限”文案。
+ * `tv_risk_name`/`tv_risk_desc` 因此不能作为必需节点，其余身份与风险特征约束不变。
  */
 const OPLUS_PROFILE: DialogProfileDefinition = {
   id: 'oplus-package-installer-v1',
@@ -460,8 +466,6 @@ const OPLUS_PROFILE: DialogProfileDefinition = {
     'com.oplus.appdetail:id/app_name',
     'com.oplus.appdetail:id/tv_result_title',
     'com.oplus.appdetail:id/tv_result_desc',
-    'com.oplus.appdetail:id/tv_risk_name',
-    'com.oplus.appdetail:id/tv_risk_desc',
     'com.oplus.appdetail:id/btn_left',
   ],
   featurePatterns: [
@@ -582,11 +586,13 @@ const ANDROID_PERMISSION_PROFILE: DialogProfileDefinition = {
   ],
   featurePatterns: [
     /拍摄照片和录制视频/i,
+    /拍摄照片或录制视频/i,
     /录制音频/i,
     /相机/i,
     /摄像头/i,
     /麦克风/i,
     /仅使用期间允许/i,
+    /仅在使用中允许/i,
     /本次使用允许/i,
     /使用应用时允许/i,
     /使用时允许/i,
@@ -595,6 +601,7 @@ const ANDROID_PERMISSION_PROFILE: DialogProfileDefinition = {
     {
       textPatterns: [
         /^仅使用期间允许$/,
+        /^仅在使用中允许$/,
         /^本次使用允许$/,
         /^使用应用时允许$/,
         /^允许$/,
