@@ -460,10 +460,46 @@ export class VideoExecutionStore {
       networkTransport: (asString(row.network_transport) || undefined) as VideoRunAttemptView['networkTransport'],
       adbSerial: asString(row.adb_serial) || undefined,
       endpointGeneration: asNumber(row.endpoint_generation),
+      evidenceDirectory: asString(row.evidence_directory) || undefined,
       startedAt: asString(row.started_at) || undefined,
       finishedAt: asString(row.finished_at) || undefined,
       createdAt: asString(row.created_at),
     }))
+  }
+
+  getResultForDeviceRun(taskId: string, deviceRunId: string, taskVideoId: string): VideoRunResultRecord | undefined {
+    const row = this.db.prepare(`
+      SELECT video_run_results.*, device_runs.device_id
+      FROM video_run_results
+      JOIN device_runs ON device_runs.id = video_run_results.device_run_id
+      WHERE video_run_results.task_id = ? AND video_run_results.device_run_id = ? AND video_run_results.task_video_id = ?
+    `).get(taskId, deviceRunId, taskVideoId) as Row | undefined
+    return row ? this.mapResult(row) : undefined
+  }
+
+  /** 最新一个记录了证据目录的 Attempt（多视频布局的 Attempt 目录，或单视频布局的 run 根目录）。 */
+  latestAttemptEvidenceDirectory(videoRunResultId: string): string | undefined {
+    const row = this.db.prepare(`
+      SELECT evidence_directory FROM video_run_attempts
+      WHERE video_run_result_id = ? AND evidence_directory IS NOT NULL AND evidence_directory <> ''
+      ORDER BY attempt_number DESC LIMIT 1
+    `).get(videoRunResultId) as Row | undefined
+    return row ? asString(row.evidence_directory) : undefined
+  }
+
+  /** 整个 Device Run 最新一次执行的证据目录：最后一个视频的最新 Attempt。 */
+  latestAttemptEvidenceDirectoryForDeviceRun(taskId: string, deviceRunId: string): string | undefined {
+    const row = this.db.prepare(`
+      SELECT video_run_attempts.evidence_directory AS evidence_directory
+      FROM video_run_attempts
+      JOIN video_run_results ON video_run_results.id = video_run_attempts.video_run_result_id
+      JOIN task_videos ON task_videos.id = video_run_results.task_video_id
+      WHERE video_run_results.task_id = ? AND video_run_results.device_run_id = ?
+        AND video_run_attempts.evidence_directory IS NOT NULL AND video_run_attempts.evidence_directory <> ''
+      ORDER BY task_videos.sequence DESC, video_run_attempts.attempt_number DESC
+      LIMIT 1
+    `).get(taskId, deviceRunId) as Row | undefined
+    return row ? asString(row.evidence_directory) : undefined
   }
 
   private mapResult(row: Row): VideoRunResultRecord {

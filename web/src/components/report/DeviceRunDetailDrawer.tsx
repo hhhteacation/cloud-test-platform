@@ -2,9 +2,15 @@ import { DownloadOutlined, FileTextOutlined, PictureOutlined } from '@ant-design
 import { Alert, Button, Descriptions, Drawer, Empty, Progress, Space, Table, Tag, Typography } from 'antd'
 import type { TableProps } from 'antd'
 
-import type { ApkExecutionProtocol, CheckResult, DeviceProfile, DeviceRunResult } from '../../types'
+import type { ApkExecutionProtocol, CheckResult, DeviceProfile, DeviceRunResult, VideoRunResult } from '../../types'
 import { ExecutionFailureDetails } from '../execution/ExecutionFailureDetails'
 import { formatBytes, formatDate } from '../../utils/format'
+
+export interface VideoEvidenceEntry {
+  sequence: number
+  displayName: string
+  result?: VideoRunResult
+}
 
 interface DeviceRunDetailDrawerProps {
   open: boolean
@@ -12,6 +18,8 @@ interface DeviceRunDetailDrawerProps {
   device?: DeviceProfile
   protocolName: string
   protocol?: ApkExecutionProtocol
+  /** 按视频拆分的执行结果；多视频任务里 logcat 和截图按视频收集。 */
+  videoEntries?: VideoEvidenceEntry[]
   onClose: () => void
 }
 
@@ -24,7 +32,7 @@ function outputUnavailableMessage(run: DeviceRunResult) {
   return '当前设备运行没有收集到 output.mp4。'
 }
 
-export function DeviceRunDetailDrawer({ open, run, device, protocolName, protocol, onClose }: DeviceRunDetailDrawerProps) {
+export function DeviceRunDetailDrawer({ open, run, device, protocolName, protocol, videoEntries, onClose }: DeviceRunDetailDrawerProps) {
   if (!run) return <Drawer open={open} onClose={onClose} />
   const output = run.outputs.find((item) => item.kind === 'processed_video')
   const handledDialogProfiles = [...new Set(run.logs.flatMap((log) => {
@@ -122,6 +130,22 @@ export function DeviceRunDetailDrawer({ open, run, device, protocolName, protoco
       <div className="terminal report-terminal drawer-section">
         {run.logs.length ? run.logs.map((log, index) => <div key={`${index}-${log}`}>{log}</div>) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有运行日志" />}
       </div>
+      {videoEntries?.some((entry) => entry.result?.logcatUrl || entry.result?.screenshotUrl) && (
+        <div className="drawer-section">
+          <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
+            多视频任务的 Logcat 和最终截图按视频独立收集，请按视频下载。
+          </Typography.Paragraph>
+          <Space direction="vertical" size={4} style={{ display: 'flex' }}>
+            {videoEntries.map((entry) => (
+              <Space key={`${entry.sequence}-${entry.displayName}`} wrap>
+                <Typography.Text style={{ minWidth: 200, display: 'inline-block' }}>{entry.sequence + 1}. {entry.displayName}</Typography.Text>
+                {entry.result?.logcatUrl && <Button size="small" icon={<FileTextOutlined />} href={entry.result.logcatUrl}>下载 Logcat</Button>}
+                {entry.result?.screenshotUrl && <Button size="small" icon={<PictureOutlined />} href={entry.result.screenshotUrl} target="_blank">最终截图</Button>}
+              </Space>
+            ))}
+          </Space>
+        </div>
+      )}
       <Space wrap>
         {run.logcatUrl && <Button icon={<FileTextOutlined />} href={run.logcatUrl}>下载设备 Logcat</Button>}
         {run.screenshotUrl && <Button icon={<PictureOutlined />} href={run.screenshotUrl} target="_blank">查看最终截图</Button>}
