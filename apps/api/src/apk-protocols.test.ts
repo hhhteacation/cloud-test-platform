@@ -60,12 +60,14 @@ describe('APK execution protocol registry', () => {
       'MORPHO',
       'MorphoVideoPProc/Controller',
       'MorphoVideoPProc/Decoder',
+      'MorphoVideoPProc/denoiser',
       'MorphoVideoPProc/Encoder',
       'MorphoVideoPProc/Interface',
       'MorphoVideoPProc/Parser',
       'MorphoVideoPProc/Sensor',
       'MorphoVideoPProc/Stabilizer',
       'MorphoVideoPProc/WDR',
+      'MorphoVideoStabilizer',
     ])
   })
 
