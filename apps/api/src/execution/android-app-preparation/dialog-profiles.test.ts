@@ -29,6 +29,42 @@ describe('strict Android system dialog profiles', () => {
     expect(match?.node.text).toBe('继续')
   })
 
+  it('blocks the vivo super-guard intercept with an actionable reason instead of timing out', () => {
+    const block = matchDialogBlock(['vivo-super-guard-install-block-v1'], {
+      manufacturer: 'vivo',
+      deviceModel: 'V2324A',
+      packageName: 'com.morphoinc.videopostprocessor',
+      applicationLabel: 'Morpho VideoStabilizer',
+      focusedWindowPackage: 'com.android.packageinstaller',
+      focusedWindowComponent: 'com.android.packageinstaller/com.android.packageinstaller.PackageInterceptActivity',
+      phase: 'install',
+      nodes: parseUiNodes(fixture('vivo-originos-super-guard-intercept.xml')),
+    })
+
+    expect(block).toMatchObject({
+      profileId: 'vivo-super-guard-install-block-v1',
+      reason: 'vivo-super-guard-authorization-required',
+    })
+    expect(block?.summary).toContain('超级守护')
+  })
+
+  it('does not block the classic vivo confirm page that still offers a verified continue target', () => {
+    const classicXml = fixture('vivo-originos-real-install-warning.xml')
+      .replace('checkable="true" checked="false" clickable="true"', 'checkable="true" checked="true" clickable="true"')
+    const block = matchDialogBlock(['vivo-super-guard-install-block-v1'], {
+      manufacturer: 'vivo',
+      deviceModel: 'V2324A',
+      packageName: 'com.morphoinc.videopostprocessor',
+      applicationLabel: 'Morpho VideoStabilizer',
+      focusedWindowPackage: 'com.android.packageinstaller',
+      focusedWindowComponent: 'com.android.packageinstaller/com.android.packageinstaller.PackageInterceptActivity',
+      phase: 'install',
+      nodes: parseUiNodes(classicXml),
+    })
+
+    expect(block).toBeUndefined()
+  })
+
 
   it('matches the real vivo OriginOS continue-install button after risk confirmation', () => {
     const xml = fixture('vivo-originos-real-install-warning.xml')
