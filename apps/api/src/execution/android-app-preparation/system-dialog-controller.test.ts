@@ -334,6 +334,53 @@ describe('SystemDialogController', () => {
     )).toHaveLength(2)
   })
 
+  it('handles consecutive camera and microphone permission dialogs as independent actions', async () => {
+    // 真机回归（2026-09-10 PJV110→HyperOS Android 16）：相机弹窗点击后麦克风弹窗
+    // 接连出现。两个弹窗的按钮文案/resource-id/bounds 完全相同，只有标题不同；
+    // 动作指纹若不含页面上下文，第二个弹窗会被误判为"上一次点击仍在等待迁移"
+    // 而永不点击，最终 RUNTIME_PERMISSION_DIALOG_TIMEOUT。
+    const diagnosticsDirectory = await mkdtemp(path.join(tmpdir(), 'xiaomi-sequence-permission-'))
+    try {
+      let currentXml = fixture('xiaomi-15pro-android16-runtime-permission.xml')
+      const device = new DialogFakeDevice(
+        () => currentXml,
+        'mCurrentFocus=Window{a1b2c3 u0 com.android.permissioncontroller/com.android.permissioncontroller.permission.ui.GrantPermissionsActivity}',
+      )
+      const controller = new SystemDialogController(device, async () => undefined)
+      const options = {
+        manufacturer: 'Xiaomi',
+        packageName: 'com.morphoinc.videopostprocessor',
+        applicationLabel: 'Morpho VideoStabilizer',
+        phase: 'runtime-permission',
+        profileIds: ['android-runtime-permission-v1'],
+        diagnosticsDirectory,
+        maxActions: 5,
+        signal: new AbortController().signal,
+      }
+      const interactionState = createDialogInteractionState()
+
+      const cameraResult = await controller.inspectAndHandle(options, interactionState)
+      expect(cameraResult).toMatchObject({
+        kind: 'handled',
+        dialog: { profileId: 'android-runtime-permission-v1', action: 'allow-permission' },
+      })
+
+      currentXml = fixture('xiaomi-15pro-android16-microphone-permission.xml')
+      const micResult = await controller.inspectAndHandle(options, interactionState)
+      expect(micResult).toMatchObject({
+        kind: 'handled',
+        dialog: { profileId: 'android-runtime-permission-v1', action: 'allow-permission' },
+      })
+
+      const taps = device.calls.filter(
+        (args) => args.slice(0, 3).join(' ') === 'shell input tap',
+      )
+      expect(taps).toHaveLength(2)
+    } finally {
+      await rm(diagnosticsDirectory, { recursive: true, force: true })
+    }
+  })
+
   it('stops instead of tapping the same Honor safe-mode span twice when the page does not change', async () => {
     const diagnosticsDirectory = await mkdtemp(path.join(tmpdir(), 'honor-safe-mode-dialog-'))
     try {
