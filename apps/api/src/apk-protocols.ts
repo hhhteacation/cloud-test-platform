@@ -226,9 +226,14 @@ const MORPHO_PROTOCOL: ApkExecutionProtocol = {
     // MorphoVideoPProc/* 子 tag 下，性能分析依赖它们，必须逐个完整列出。
     // denoise 测试版（VideoDenoiser Ver.2.0.1，feature=0xc）新增 denoiser 子 tag，
     // 另有一条独立的 MorphoVideoStabilizer 版本横幅 tag（2026-09-09 真机确认）。
+    // lyblyb/System.err（2026-09-11 真机确认）：MainActivity.onCreate 每次冷启动都会
+    // 把 APK assets 里的 5 个配置（含 morpho_video_denoiser_setting.xml）复制进 DataPack，
+    // lyblyb 记录每次 copy，System.err 记录复制失败（EACCES 等）——降噪是否激活的直接证据。
     logTag: 'MORPHO',
     logTags: [
       'MORPHO',
+      'lyblyb',
+      'System.err',
       'MorphoVideoPProc/Controller',
       'MorphoVideoPProc/Decoder',
       'MorphoVideoPProc/denoiser',
@@ -370,7 +375,16 @@ export interface MorphoLogSignal {
 }
 
 export function parseMorphoLogLine(line: string): MorphoLogSignal | undefined {
-  if (!/MORPHO|MorphoVideoPProc\//.test(line)) return undefined
+  if (!/MORPHO|MorphoVideoPProc\/|lyblyb|System\.err/.test(line)) return undefined
+
+  // MainActivity.onCreate 每次冷启动都会把 APK assets 的配置复制进 DataPack；
+  // 降噪 xml 的复制成功与否直接决定 feature=0xc / 0x4（2026-09-11 vivo 真机确认）。
+  if (line.includes('copy file ') && line.includes('morpho_video_denoiser_setting.xml')) {
+    return { progress: 46, message: 'App 正在应用降噪配置（morpho_video_denoiser_setting.xml）' }
+  }
+  if (line.includes('EACCES') && line.includes('morpho_video_denoiser_setting.xml')) {
+    return { progress: 46, message: 'App 复制降噪配置被系统拒绝（EACCES），本次将以仅防抖模式运行' }
+  }
 
   const error = /Error processing file:\s*(.+)$/i.exec(line)
   if (error) return { progress: 65, message: `Morpho 处理失败：${error[1]}`, failureMessage: error[1].trim() }
