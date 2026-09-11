@@ -615,6 +615,7 @@ export class AdbRunExecutor {
         pollIntervalMs: this.appConfig.pollIntervalMs,
         maxLogcatBytes: this.appConfig.maxLogcatBytes,
         minFreeDiskBytes: this.appConfig.minFreeDiskBytes,
+        companionAssetsDir: this.appConfig.morphoDataPackAssetsDir,
       }
       const protocolExecutor = this.dependencies.createProtocolExecutor?.(executorDependencies)
         ?? createProtocolExecutor(protocol, executorDependencies)

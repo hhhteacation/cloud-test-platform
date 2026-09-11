@@ -186,7 +186,9 @@ const MORPHO_PROTOCOL: ApkExecutionProtocol = {
     },
   },
   input: {
-    description: '与 Demo batch_process.sh 一致：把原始文件名 MP4 推送到 VideoStabilizerDataPack 根目录。',
+    description: '与 Demo batch_process.sh 一致：把原始文件名 MP4 推送到 VideoStabilizerDataPack 根目录；'
+      + '另把 morphoDataPackAssetsDir 里的伴生配置（如 morpho_video_denoiser_setting.xml）推到同一目录，'
+      + '这是 demo 脚本没有、手动测试时额外做的一步，决定 SDK 是否激活降噪。',
     remoteDirectoryTemplate: '/storage/emulated/0/Android/data/{packageName}/files/VideoStabilizerDataPack',
     fileName: 'input.mp4',
     preserveOriginalFileName: true,
@@ -374,6 +376,16 @@ export function parseMorphoLogLine(line: string): MorphoLogSignal | undefined {
   if (error) return { progress: 65, message: `Morpho 处理失败：${error[1]}`, failureMessage: error[1].trim() }
   if (/no mp4|not found.*mp4|directory.*not exist/i.test(line)) {
     return { progress: 50, message: 'Morpho 未找到可处理的 MP4', failureMessage: 'Morpho 未找到可处理的 MP4' }
+  }
+  // feature 0x4 = 仅防抖；0x8 位 = 降噪模块（需要 DataPack 里有 morpho_video_denoiser_setting.xml）。
+  const feature = /pipeline created \(feature=(0x[0-9a-f]+)\)/i.exec(line)
+  if (feature) {
+    const denoiserActive = (Number.parseInt(feature[1], 16) & 0x8) !== 0
+    return {
+      businessStarted: true,
+      progress: 70,
+      message: `Morpho pipeline feature=${feature[1].toLowerCase()}（${denoiserActive ? '降噪已激活' : '仅防抖，未激活降噪'}）`,
+    }
   }
   if (line.includes('Starting batch processing for path:')) return { businessStarted: true, progress: 48, message: 'Morpho 批处理服务已开始扫描输入目录' }
   if (/Found\s+\d+\s+mp4/i.test(line) || line.includes('Found mp4 file:')) return { businessStarted: true, progress: 52, message: 'Morpho 已发现输入 MP4' }

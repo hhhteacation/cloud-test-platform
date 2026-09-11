@@ -34,6 +34,13 @@ export interface AppConfig {
   pollIntervalMs: number
   managedObservationAdoptionEnabled: boolean
   managedObservationAdoptionDeviceIds?: string[]
+  /**
+   * Files in this directory are pushed into the Morpho VideoStabilizerDataPack
+   * directory before every attempt (the demo batch_process.sh only pushes the
+   * MP4; vendor configs such as morpho_video_denoiser_setting.xml are pushed
+   * by hand in manual tests). A missing directory means stabilizer-only runs.
+   */
+  morphoDataPackAssetsDir: string
 }
 
 export class ConfigError extends Error {
@@ -95,6 +102,15 @@ function absoluteDataDir(env: NodeJS.ProcessEnv) {
   return path.normalize(configured)
 }
 
+function absoluteDirectory(env: NodeJS.ProcessEnv, name: string, fallback: string) {
+  const configured = env[name]?.trim()
+  if (!configured) return fallback
+  if (!path.isAbsolute(configured)) {
+    throw new ConfigError(`${name} 必须是绝对路径，当前值：${configured}`)
+  }
+  return path.normalize(configured)
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const androidSdk = env.ANDROID_SDK_ROOT ?? path.join(env.HOME ?? '', 'Library/Android/sdk')
   const dataDir = absoluteDataDir(env)
@@ -132,6 +148,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     pollIntervalMs: positiveInteger(env, 'POLL_INTERVAL_MS', 1000),
     managedObservationAdoptionEnabled: strictBoolean(env, 'MANAGED_OBSERVATION_ADOPTION_ENABLED', false),
     managedObservationAdoptionDeviceIds: csvValues(env, 'MANAGED_OBSERVATION_ADOPTION_DEVICE_IDS'),
+    morphoDataPackAssetsDir: absoluteDirectory(
+      env,
+      'MORPHO_DATA_PACK_ASSETS_DIR',
+      path.join(dataDir, 'morpho-data-pack-assets'),
+    ),
   }
 }
 

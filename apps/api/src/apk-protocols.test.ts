@@ -148,4 +148,17 @@ describe('APK execution protocol registry', () => {
       failureMessage: 'native init failed',
     })
   })
+
+  it('reports the Morpho pipeline feature mask so denoiser activation is visible', () => {
+    const line = (mask: string) => `09-10 15:53:00.678  9783 10404 I MorphoVideoPProc/Controller: pipeline created (feature=${mask}): /in.mp4 -> /out.mp4`
+    expect(parseMorphoLogLine(line('0xc'))).toEqual({
+      businessStarted: true,
+      progress: 70,
+      message: 'Morpho pipeline feature=0xc（降噪已激活）',
+    })
+    expect(parseMorphoLogLine(line('0x4'))).toMatchObject({
+      message: 'Morpho pipeline feature=0x4（仅防抖，未激活降噪）',
+    })
+    expect(parseMorphoLogLine(line('0xC'))?.message).toBe('Morpho pipeline feature=0xc（降噪已激活）')
+  })
 })

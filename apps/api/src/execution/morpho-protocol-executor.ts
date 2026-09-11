@@ -1,4 +1,6 @@
-import { stat, writeFile } from 'node:fs/promises'
+import type { Dirent } from 'node:fs'
+import { readdir, stat, writeFile } from 'node:fs/promises'
+import path from 'node:path'
 
 import {
   buildLaunchArguments,
@@ -206,6 +208,14 @@ export class MorphoProtocolExecutor extends BaseProtocolExecutor {
     if (!protocol.output.appCreatesDirectory) {
       await this.adb(['shell', 'mkdir', '-p', paths.remoteOutputDirectory], signal)
     }
+    const pushedAssets = await this.pushCompanionAssets(context)
+    if (pushedAssets > 0) {
+      // The SDK decides its feature mask when the process starts. The warm-up
+      // launch already created a live process without these configs, so the
+      // batch intent must reach a fresh process (verified on vivo V2324A).
+      await this.adb(['shell', 'am', 'force-stop', protocol.packageName], signal)
+      reporter.addLog('已停止预热进程，批处理将冷启动并读取伴生配置')
+    }
     await this.adb(
       ['push', context.input.localPath, paths.remoteInputFile],
       signal,
@@ -228,6 +238,56 @@ export class MorphoProtocolExecutor extends BaseProtocolExecutor {
       message: `${localSize} bytes`,
     })
     return localSize
+  }
+
+  /**
+   * The demo batch_process.sh only pushes the MP4; vendor configs such as
+   * morpho_video_denoiser_setting.xml are pushed by hand in manual tests and
+   * decide the SDK feature mask (0x4 stabilizer-only vs 0xc with denoiser).
+   * Clean install wipes the DataPack directory, so they must be pushed per attempt.
+   * Returns the number of files pushed.
+   */
+  private async pushCompanionAssets(context: ProtocolExecutionContext): Promise<number> {
+    const { paths, signal, reporter } = context
+    const directory = this.dependencies.companionAssetsDir
+    if (!directory) return 0
+
+    let entries: Dirent[]
+    try {
+      entries = await readdir(directory, { withFileTypes: true })
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        reporter.addLog(`未找到伴生资产目录 ${directory}，Morpho 将以仅防抖模式运行`, 'warning')
+        return 0
+      }
+      throw new TaskExecutionError(
+        `读取伴生资产目录失败：${error instanceof Error ? error.message : String(error)}`,
+        'INPUT_PUSH_FAILED',
+      )
+    }
+
+    const names = entries
+      .filter((entry) => entry.isFile() && !entry.name.startsWith('.'))
+      .map((entry) => entry.name)
+      .sort()
+    if (names.length === 0) {
+      reporter.addLog(`伴生资产目录 ${directory} 为空，Morpho 将以仅防抖模式运行`, 'warning')
+      return 0
+    }
+
+    const pushed: string[] = []
+    for (const name of names) {
+      const localPath = path.join(directory, name)
+      await this.adb(
+        ['push', localPath, `${paths.remoteInputDirectory}/${name}`],
+        signal,
+        60_000,
+        'INPUT_PUSH_FAILED',
+      )
+      pushed.push(`${name} (${(await stat(localPath)).size} bytes)`)
+    }
+    reporter.addLog(`已推送伴生资产：${pushed.join('、')}`)
+    return pushed.length
   }
 
   private async waitForCompletion(

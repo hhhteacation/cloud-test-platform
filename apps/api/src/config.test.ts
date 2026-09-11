@@ -114,4 +114,17 @@ describe('AppConfig', () => {
       MANAGED_OBSERVATION_ADOPTION_ENABLED: '1',
     })).toThrow(ConfigError)
   })
+
+  it('Morpho 伴生资产目录默认位于数据目录下，可用绝对路径覆盖', () => {
+    const defaults = loadConfig({ HOME: '/tmp/home', CLOUD_TEST_DATA_DIR: '/tmp/cloud-test-data' })
+    expect(defaults.morphoDataPackAssetsDir).toBe('/tmp/cloud-test-data/morpho-data-pack-assets')
+    expect(loadConfig({
+      HOME: '/tmp/home',
+      MORPHO_DATA_PACK_ASSETS_DIR: '/opt/morpho//assets',
+    }).morphoDataPackAssetsDir).toBe('/opt/morpho/assets')
+    expect(() => loadConfig({
+      HOME: '/tmp/home',
+      MORPHO_DATA_PACK_ASSETS_DIR: './assets',
+    })).toThrow(ConfigError)
+  })
 })
