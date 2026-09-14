@@ -135,6 +135,20 @@ interface VideoAttemptOutcome {
   failure?: ExecutionFailure
 }
 
+/**
+ * The Morpho demo app enables the denoiser (pipeline feature=0xc) only for
+ * inputs whose filename STARTS WITH the original test stem — a prefixed name
+ * silently degrades every run to stabilizer-only 0x4 (2026-09-14 PJV110
+ * device-proven with prefix/suffix variants). The per-attempt uniqueness
+ * marker therefore goes AFTER the stem, not before it.
+ */
+function morphoAttemptInputName(originalName: string, taskVideoId: string, attemptNumber: number) {
+  const stem = originalName.toLowerCase().endsWith('.mp4')
+    ? originalName.slice(0, -4)
+    : originalName
+  return `${stem}-${taskVideoId}-attempt-${attemptNumber}.mp4`
+}
+
 export class AdbRunExecutor {
   readonly taskId: string
   private readonly runId: string
@@ -568,7 +582,7 @@ export class AdbRunExecutor {
       const remoteExecutionId = `${taskId}-${video.taskVideoId}-attempt-${attemptNumber}`
       const remoteInputName = protocol.launch.supportsTaskId
         ? video.videoOriginalName
-        : `${video.taskVideoId}-attempt-${attemptNumber}-${video.videoOriginalName}`
+        : morphoAttemptInputName(video.videoOriginalName, video.taskVideoId, attemptNumber)
       const paths = buildExecutionPaths(protocol, {
         taskId: remoteExecutionId,
         manufacturer,

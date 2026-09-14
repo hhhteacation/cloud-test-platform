@@ -157,8 +157,8 @@ class FakeDevice implements AdbExecutionDevice {
   }
 
   async stat(remotePath: string) {
-    if (remotePath.endsWith('input.mp4')) return { kind: 'present', value: 11, result: result(0, '11') } as const
     if (remotePath.endsWith('_stabilized.mp4')) return { kind: 'present', value: 12, result: result(0, '12') } as const
+    if (remotePath.endsWith('.mp4')) return { kind: 'present', value: 11, result: result(0, '11') } as const
     return { kind: 'absent', result: result(1, '', 'No such file or directory') } as const
   }
 
