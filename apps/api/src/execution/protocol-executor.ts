@@ -92,6 +92,8 @@ export interface ProtocolExecutorDependencies {
   pollIntervalMs: number
   maxLogcatBytes: number
   minFreeDiskBytes: number
+  /** Local directory whose files are pushed next to the input before launch. */
+  companionAssetsDir?: string
   now?: () => number
   delay?: (ms: number, signal: AbortSignal) => Promise<void>
 }

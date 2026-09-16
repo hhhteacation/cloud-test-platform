@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
@@ -51,6 +51,8 @@ interface MorphoScenario {
   outputObservation?: AdbObservation<number>
   cancelled?: boolean
   cleanupError?: Error
+  /** File name → content written into a local companion-asset dir; 'missing' points at a non-existent dir. */
+  companionAssets?: Record<string, string> | 'missing'
 }
 
 function probeSection(args: readonly string[]): ProbeSection | undefined {
@@ -153,6 +155,16 @@ async function createHarness(scenario: MorphoScenario = {}) {
   roots.push(root)
   const inputPath = path.join(root, 'input.mp4')
   await writeFile(inputPath, 'input-video')
+  let companionAssetsDir: string | undefined
+  if (scenario.companionAssets === 'missing') {
+    companionAssetsDir = path.join(root, 'missing-assets')
+  } else if (scenario.companionAssets) {
+    companionAssetsDir = path.join(root, 'companion-assets')
+    await mkdir(companionAssetsDir)
+    for (const [name, content] of Object.entries(scenario.companionAssets)) {
+      await writeFile(path.join(companionAssetsDir, name), content)
+    }
+  }
   const protocol = findApkExecutionProtocol('com.morphoinc.videopostprocessor')!
   const paths = buildExecutionPaths(protocol, {
     taskId: 'task-1',
@@ -190,6 +202,7 @@ async function createHarness(scenario: MorphoScenario = {}) {
     pollIntervalMs: 1_000,
     maxLogcatBytes: 1_024,
     minFreeDiskBytes: 1,
+    companionAssetsDir,
     now: () => now,
     delay: async (ms, signal) => {
       if (signal.aborted) throw new DOMException('任务已取消', 'AbortError')
@@ -213,7 +226,7 @@ async function createHarness(scenario: MorphoScenario = {}) {
     signal: new AbortController().signal,
     reporter,
   }
-  return { captureFailureLogcat, context, device, executor, logs, checks }
+  return { captureFailureLogcat, context, device, executor, logs, checks, companionAssetsDir }
 }
 
 describe('MorphoProtocolExecutor seam', () => {
@@ -381,6 +394,80 @@ describe('MorphoProtocolExecutor seam', () => {
     expect(harness.logs).toContainEqual({
       message: expect.stringContaining('force-stop denied'),
       level: 'warning',
+    })
+  })
+})
+
+describe('MorphoProtocolExecutor companion assets', () => {
+  const xml = '<MorphoVideoDenoiser><Mode><bypass length="1">0</bypass></Mode></MorphoVideoDenoiser>'
+
+  it('pushes companion assets into the DataPack before the input MP4, without force-stop', async () => {
+    const harness = await createHarness({
+      companionAssets: {
+        'morpho_video_denoiser_setting.xml': xml,
+        '.DS_Store': 'finder-noise',
+      },
+    })
+
+    await harness.executor.execute(harness.context)
+
+    const { paths } = harness.context
+    const commands = harness.device.commands.map((command) => command.join(' '))
+    const assetIndex = commands.indexOf(
+      [
+        'push',
+        path.join(harness.companionAssetsDir!, 'morpho_video_denoiser_setting.xml'),
+        `${paths.remoteInputDirectory}/morpho_video_denoiser_setting.xml`,
+      ].join(' '),
+    )
+    const inputIndex = commands.indexOf(
+      ['push', harness.context.input.localPath, paths.remoteInputFile].join(' '),
+    )
+    const launchIndex = commands.findIndex((command) => command.startsWith('shell am start'))
+    expect(assetIndex).toBeGreaterThanOrEqual(0)
+    expect(inputIndex).toBeGreaterThan(assetIndex)
+    expect(launchIndex).toBeGreaterThan(inputIndex)
+    // vivo freezes cold-restarted batch processes — no force-stop may run between
+    // the push and the batch launch (the final cleanup force-stop is fine).
+    expect(commands.slice(assetIndex, launchIndex)).not.toContain(
+      `shell am force-stop ${harness.context.protocol.packageName}`,
+    )
+    expect(commands.some((command) => command.includes('.DS_Store'))).toBe(false)
+    expect(harness.logs).toContainEqual({
+      message: `已推送伴生资产：morpho_video_denoiser_setting.xml (${Buffer.byteLength(xml)} bytes)`,
+      level: 'info',
+    })
+  })
+
+  it('warns and runs stabilizer-only when the companion asset directory is missing', async () => {
+    const harness = await createHarness({ companionAssets: 'missing' })
+
+    await harness.executor.execute(harness.context)
+
+    const pushes = harness.device.commands.filter((command) => command[0] === 'push')
+    expect(pushes).toEqual([
+      ['push', harness.context.input.localPath, harness.context.paths.remoteInputFile],
+    ])
+    expect(harness.logs).toContainEqual({
+      message: expect.stringContaining('未找到伴生资产目录'),
+      level: 'warning',
+    })
+  })
+
+  it('fails the attempt as INPUT_PUSH_FAILED when an asset push fails', async () => {
+    const harness = await createHarness({
+      companionAssets: { 'morpho_video_denoiser_setting.xml': xml },
+    })
+    const originalRun = harness.device.run.bind(harness.device)
+    harness.device.run = async (args) => {
+      if (args[0] === 'push' && args[1]?.endsWith('.xml')) {
+        throw new TaskExecutionError('adb: error: failed to copy', 'INPUT_PUSH_FAILED')
+      }
+      return originalRun(args)
+    }
+
+    await expect(harness.executor.execute(harness.context)).rejects.toMatchObject({
+      code: 'INPUT_PUSH_FAILED',
     })
   })
 })

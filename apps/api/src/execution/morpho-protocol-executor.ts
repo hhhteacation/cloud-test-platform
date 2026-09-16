@@ -1,4 +1,6 @@
-import { stat, writeFile } from 'node:fs/promises'
+import type { Dirent } from 'node:fs'
+import { readdir, stat, writeFile } from 'node:fs/promises'
+import path from 'node:path'
 
 import {
   buildLaunchArguments,
@@ -206,6 +208,7 @@ export class MorphoProtocolExecutor extends BaseProtocolExecutor {
     if (!protocol.output.appCreatesDirectory) {
       await this.adb(['shell', 'mkdir', '-p', paths.remoteOutputDirectory], signal)
     }
+    await this.pushCompanionAssets(context)
     await this.adb(
       ['push', context.input.localPath, paths.remoteInputFile],
       signal,
@@ -228,6 +231,57 @@ export class MorphoProtocolExecutor extends BaseProtocolExecutor {
       message: `${localSize} bytes`,
     })
     return localSize
+  }
+
+  /**
+   * The APK activates the denoiser (feature=0xc) only when
+   * morpho_video_denoiser_setting.xml is already in the DataPack directory when
+   * the app process re-runs its startup check — the warm-up launch happens on a
+   * freshly cleaned directory (decision = stabilizer-only), and the batch
+   * launch that follows re-runs the check (2026-09-14 PJV110: push after the
+   * warm start + same-process batch launch = 0xc and full completion). No
+   * force-stop: vivo freezes cold-restarted batch processes.
+   */
+  private async pushCompanionAssets(context: ProtocolExecutionContext) {
+    const { paths, signal, reporter } = context
+    const directory = this.dependencies.companionAssetsDir
+    if (!directory) return
+
+    let entries: Dirent[]
+    try {
+      entries = await readdir(directory, { withFileTypes: true })
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        reporter.addLog(`未找到伴生资产目录 ${directory}，Morpho 将以仅防抖模式运行`, 'warning')
+        return
+      }
+      throw new TaskExecutionError(
+        `读取伴生资产目录失败：${error instanceof Error ? error.message : String(error)}`,
+        'INPUT_PUSH_FAILED',
+      )
+    }
+
+    const names = entries
+      .filter((entry) => entry.isFile() && !entry.name.startsWith('.'))
+      .map((entry) => entry.name)
+      .sort()
+    if (names.length === 0) {
+      reporter.addLog(`伴生资产目录 ${directory} 为空，Morpho 将以仅防抖模式运行`, 'warning')
+      return
+    }
+
+    const pushed: string[] = []
+    for (const name of names) {
+      const localPath = path.join(directory, name)
+      await this.adb(
+        ['push', localPath, `${paths.remoteInputDirectory}/${name}`],
+        signal,
+        60_000,
+        'INPUT_PUSH_FAILED',
+      )
+      pushed.push(`${name} (${(await stat(localPath)).size} bytes)`)
+    }
+    reporter.addLog(`已推送伴生资产：${pushed.join('、')}`)
   }
 
   private async waitForCompletion(
