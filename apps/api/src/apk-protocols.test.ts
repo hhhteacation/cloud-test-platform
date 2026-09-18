@@ -7,6 +7,7 @@ import {
   buildWarmupLaunchArguments,
   findApkExecutionProtocol,
   parseMorphoLogLine,
+  resolveBatchTimeoutSeconds,
   resolveProtocolTimeoutSeconds,
 } from './apk-protocols.js'
 
@@ -17,6 +18,7 @@ describe('APK execution protocol registry', () => {
     expect(protocol?.launch.supportsTaskId).toBe(true)
     expect(protocol?.result.apkGeneratesResultJson).toBe(true)
     expect(protocol?.install.dialogAutomation).toBeUndefined()
+    expect(protocol?.batch).toBeUndefined()
   })
 
   it('recognizes Morpho VideoPostProcessor and exposes its real capabilities', () => {
@@ -25,6 +27,7 @@ describe('APK execution protocol registry', () => {
     expect(protocol?.launch.supportsTaskId).toBe(false)
     expect(protocol?.launch.supportsAutoRun).toBe(false)
     expect(protocol?.launch.requiresUiInteraction).toBe(false)
+    expect(protocol?.batch).toEqual({ mode: 'directory' })
     expect(protocol?.result.apkGeneratesResultJson).toBe(false)
     expect(protocol?.output.filePattern).toBe('*_stabilized.mp4')
     expect(protocol?.install.mode).toBe('clean')
@@ -147,5 +150,21 @@ describe('APK execution protocol registry', () => {
     expect(parseMorphoLogLine('E/MORPHO: Error processing file: native init failed')).toMatchObject({
       failureMessage: 'native init failed',
     })
+  })
+
+  it('scales the batch deadline by participating video count only for directory-batch protocols', () => {
+    const morpho = findApkExecutionProtocol('com.morphoinc.videopostprocessor')!
+    const carrier = findApkExecutionProtocol('com.sdktest.platform')!
+
+    expect(resolveBatchTimeoutSeconds(morpho, 300, 4)).toBe(1_200)
+    expect(resolveBatchTimeoutSeconds(morpho, 300, 1)).toBe(300)
+    expect(resolveBatchTimeoutSeconds(carrier, 300, 4)).toBe(300)
+    // 协议下限先按单视频生效，再乘视频数。
+    expect(resolveBatchTimeoutSeconds(
+      { ...morpho, completion: { ...morpho.completion, minimumTimeoutSeconds: 120 } },
+      60,
+      3,
+    )).toBe(360)
+    expect(resolveBatchTimeoutSeconds(carrier, 300, 0)).toBe(300)
   })
 })

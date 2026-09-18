@@ -35,6 +35,14 @@ export interface ApkExecutionProtocol {
     preserveOriginalFileName?: boolean
     launchValue: 'input_file' | 'input_directory'
   }
+  /**
+   * 目录批处理声明（doc 多设备复制执行模式 §7.3）：一台设备的一批视频
+   * 只发送一次批处理 Action，输出按确定性命名逐视频收敛。
+   * 未声明的协议由执行器按视频顺序逐条执行，不得伪装成批处理。
+   */
+  batch?: {
+    mode: 'directory'
+  }
   launch: {
     description: string
     action?: string
@@ -190,6 +198,12 @@ const MORPHO_PROTOCOL: ApkExecutionProtocol = {
     fileName: 'input.mp4',
     preserveOriginalFileName: true,
     launchValue: 'input_directory',
+  },
+  // 2026-09-18 真机验证（Honor ALI-AN00 成功 / Xiaomi 25060RK16C 失败路径）：
+  // APK 扫描 material_path 目录内全部 MP4 串行处理，输出名 {厂商}_{型号}_{输入名}_stabilized.mp4
+  // 可确定性映射；marker 只在最后一条完成后写一次；单条致命失败会销毁批处理服务且不写 marker。
+  batch: {
+    mode: 'directory',
   },
   launch: {
     description: '先普通启动 MainActivity 并等待 1 秒，再通过 ACTION_BATCH_PROCESS 和 material_path 启动批处理。',
@@ -396,6 +410,20 @@ export function resolveProtocolTimeoutSeconds(
 ) {
   const minimum = protocol.completion.minimumTimeoutSeconds
   return minimum ? Math.max(configuredTimeoutSeconds, minimum) : configuredTimeoutSeconds
+}
+
+/**
+ * 整批一次批处理 Action 的超时预算：每视频额度 × 参与视频数。
+ * timeoutSeconds 的用户语义保持"每条视频最多这么久"不变；重试批次按剩余
+ * 视频数重算。非批处理协议保持单视频语义。
+ */
+export function resolveBatchTimeoutSeconds(
+  protocol: ApkExecutionProtocol,
+  configuredTimeoutSeconds: number,
+  videoCount: number,
+) {
+  const perVideoSeconds = resolveProtocolTimeoutSeconds(protocol, configuredTimeoutSeconds)
+  return protocol.batch ? perVideoSeconds * Math.max(1, videoCount) : perVideoSeconds
 }
 
 export function toPublicApkProtocol(protocol: ApkExecutionProtocol) {
