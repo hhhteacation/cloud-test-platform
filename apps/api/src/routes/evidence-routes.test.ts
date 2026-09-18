@@ -71,7 +71,7 @@ describe('evidence routes logcat download', () => {
     await app.close()
   })
 
-  it('falls back to the latest Attempt evidence directory for multi-video runs', async () => {
+  it('falls back to the latest Attempt evidence directory when the run root has no flat file', async () => {
     const tasksDir = await mkdtemp(path.join(os.tmpdir(), 'evidence-route-attempt-'))
     directories.push(tasksDir)
     const attemptDirectory = path.join(tasksDir, 'task-1', 'device-runs', 'run-1', 'videos', 'task-video-2', 'attempts', '1')
@@ -135,7 +135,7 @@ describe('evidence routes logcat download', () => {
     await app.close()
   })
 
-  it('falls back to the latest Attempt screenshot for multi-video runs', async () => {
+  it('falls back to the latest Attempt screenshot when the run root has no flat file', async () => {
     const tasksDir = await mkdtemp(path.join(os.tmpdir(), 'evidence-route-screenshot-'))
     directories.push(tasksDir)
     const screenshotDirectory = path.join(tasksDir, 'task-1', 'device-runs', 'run-1', 'videos', 'task-video-3', 'attempts', '1', 'screenshots')

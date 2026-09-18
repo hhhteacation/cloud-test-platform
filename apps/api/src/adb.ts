@@ -316,8 +316,7 @@ export class AdbRunExecutor {
 
   private localAttemptDirectory(video: VideoRunExecution, attemptNumber: number) {
     const runRoot = path.join(this.appConfig.tasksDir, this.taskId, 'device-runs', this.runId)
-    // Preserve the historical single-video evidence path while isolating every multi-video attempt.
-    if (this.execution.videos.length === 1 && attemptNumber === 1) return runRoot
+    // 历史 N=1 平铺布局已废弃：下载路由用双布局解析兼容旧任务，新任务一律视频级隔离目录。
     return path.join(runRoot, 'videos', video.taskVideoId, 'attempts', String(attemptNumber))
   }
 
@@ -433,13 +432,12 @@ export class AdbRunExecutor {
     deadlineTimer.unref()
     const protocol = findApkExecutionProtocol(execution.apkPackageName)
     let currentPhase: DeviceRunPhase = 'validating_device'
-    const manifestAttemptId = execution.videos.length === 1 && attemptNumber === 1 ? runId : attemptId
     const attemptManifestPath = path.join(localRunDir, 'attempt-manifest.json')
     const deviceSnapshotPath = path.join(localRunDir, 'device-snapshot.json')
     let attemptManifest
     try {
       attemptManifest = await buildAttemptManifest({
-        attemptId: manifestAttemptId,
+        attemptId,
         deviceSerial: execution.deviceSerial,
         deviceName: execution.deviceName,
         protocolId: protocol?.id ?? 'unsupported',

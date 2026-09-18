@@ -443,10 +443,18 @@ describe('AdbRunExecutor cross-module seam', () => {
 
     await executor.execute()
 
-    const evidenceDirectory = path.join(root, 'tasks', execution.taskId, 'device-runs', execution.runId)
+    const taskView = database.getTask(execution.taskId)!
+    const taskVideo = taskView.videos[0]!
+    const firstAttempt = taskView.videoRuns[taskVideo.id]['device-1'].attempts[0]!
+    // N=1 与多视频统一使用视频级 Attempt 目录；DB 记录的 evidenceDirectory 必须就是落盘目录。
+    const evidenceDirectory = firstAttempt.evidenceDirectory!
+    expect(evidenceDirectory).toBe(path.join(
+      root, 'tasks', execution.taskId, 'device-runs', execution.runId,
+      'videos', taskVideo.id, 'attempts', '1',
+    ))
     const manifest = JSON.parse(await readFile(path.join(evidenceDirectory, 'attempt-manifest.json'), 'utf8'))
     expect(manifest).toEqual({
-      attemptId: execution.runId,
+      attemptId: firstAttempt.id,
       commitSha: '0123456789abcdef',
       dirty: false,
       startedAt: '2026-08-09T01:02:03.000Z',
@@ -481,8 +489,6 @@ describe('AdbRunExecutor cross-module seam', () => {
       cancelled: false,
       error: { code: 'APK_INSTALL_FAILED', message: 'stop after manifest seam' },
     })
-    const taskView = database.getTask(execution.taskId)!
-    const taskVideo = taskView.videos[0]!
     expect(taskView.videoRuns[taskVideo.id]['device-1'].attempts[0]).toMatchObject({
       endpointId: 'missing-endpoint-id',
       connectionKind: 'usb',
@@ -537,9 +543,11 @@ describe('AdbRunExecutor cross-module seam', () => {
 
     await executor.execute()
 
-    const evidenceDirectory = path.join(root, 'tasks', execution.taskId, 'device-runs', execution.runId)
+    const offlineTaskView = database.getTask(execution.taskId)!
+    const offlineAttempt = offlineTaskView.videoRuns[offlineTaskView.videos[0]!.id]['device-1'].attempts[0]!
+    const evidenceDirectory = offlineAttempt.evidenceDirectory!
     expect(JSON.parse(await readFile(path.join(evidenceDirectory, 'attempt-manifest.json'), 'utf8'))).toMatchObject({
-      attemptId: execution.runId,
+      attemptId: offlineAttempt.id,
       commitSha: 'offline-sha',
       dirty: true,
       device: { serial: 'SERIAL-1', manufacturer: 'unknown', model: 'unknown' },
@@ -581,11 +589,11 @@ describe('AdbRunExecutor cross-module seam', () => {
 
     await executor.execute()
 
-    const manifestPath = path.join(
-      root, 'tasks', execution.taskId, 'device-runs', execution.runId, 'attempt-manifest.json',
-    )
+    const unsupportedTaskView = database.getTask(execution.taskId)!
+    const unsupportedAttempt = unsupportedTaskView.videoRuns[unsupportedTaskView.videos[0]!.id]['device-1'].attempts[0]!
+    const manifestPath = path.join(unsupportedAttempt.evidenceDirectory!, 'attempt-manifest.json')
     expect(JSON.parse(await readFile(manifestPath, 'utf8'))).toMatchObject({
-      attemptId: execution.runId,
+      attemptId: unsupportedAttempt.id,
       protocolId: 'unsupported',
       commitSha: 'unsupported-sha',
       device: { serial: 'SERIAL-1' },
