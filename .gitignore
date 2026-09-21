@@ -32,3 +32,7 @@ apps/api/dist/
 # These two tiny demo assets are intentionally versioned with the sample app.
 !web/public/input.mp4
 !android/app/src/main/assets/input.mp4
+
+# iOS tooling local artifacts
+scripts/.venv-ios/
+scripts/.step0-ios-screenshot.png
