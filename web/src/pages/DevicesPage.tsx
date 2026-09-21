@@ -31,6 +31,7 @@ import {
   createDeviceRefreshCoordinator,
   usePlatformDevices,
 } from "../platform/usePlatformData";
+import { IosDevicesSection } from "./IosDevicesSection";
 import type {
   DeviceConnectionStatus,
   DeviceDiscoveryCandidate,
@@ -1324,6 +1325,11 @@ export function DevicesPage() {
           </Card>
         </Space>
       ),
+    },
+    {
+      key: "ios",
+      label: "iOS 设备",
+      children: <IosDevicesSection />,
     },
   ];
 

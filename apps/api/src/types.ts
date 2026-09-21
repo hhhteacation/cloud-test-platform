@@ -139,15 +139,17 @@ export interface DeviceProfile {
 }
 
 export interface DeviceDiscoveryCandidate {
-  /** ADB transport serial. Network transports use host:port here. */
+  /** Transport serial. Android/ADB may use host:port for network transports; iOS uses the usbmux UDID. */
   serial: string;
-  /** Stable Android hardware identity read from ro.serialno/ro.boot.serialno. */
+  /** Stable hardware identity (Android ro.serialno; iOS lockdown SerialNumber). */
   hardwareSerial?: string;
-  platform: "android";
+  platform: DevicePlatform;
   manufacturer?: string;
   name?: string;
   model?: string;
   androidVersion?: string;
+  /** iOS marketing OS version (lockdown ProductVersion, e.g. "26.6.2"). */
+  iosVersion?: string;
   apiLevel?: number;
   architecture?: string;
   buildVersion?: string;

@@ -137,7 +137,7 @@ function PlatformSwitcher({ collapsed, pathname, onNavigate }: { collapsed: bool
       menu={{
         items: [
           { key: 'android', icon: <AndroidOutlined />, label: <Space>Android 兼容测试<Tag color="success">可用</Tag></Space>, onClick: () => onNavigate('/tasks') },
-          { key: 'ios', icon: <AppleOutlined />, label: <Space>iOS 兼容测试<Tag>规划中</Tag></Space>, onClick: () => onNavigate('/platform/ios') },
+          { key: 'ios', icon: <AppleOutlined />, label: <Space>iOS 兼容测试<Tag color="success">接入中</Tag></Space>, onClick: () => onNavigate('/platform/ios') },
           { key: 'harmonyos', icon: <MobileOutlined />, label: <Space>HarmonyOS 兼容测试<Tag>规划中</Tag></Space>, onClick: () => onNavigate('/platform/harmonyos') },
         ],
       }}

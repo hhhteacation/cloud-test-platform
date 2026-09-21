@@ -328,15 +328,17 @@ export interface DeviceProfile {
 }
 
 export interface DeviceDiscoveryCandidate {
-  /** ADB transport serial. Network transports use host:port here. */
+  /** Transport serial. Android may use host:port; iOS uses the usbmux UDID. */
   serial: string;
-  /** Stable Android hardware identity when the backend could verify it. */
+  /** Stable hardware identity when the backend could verify it. */
   hardwareSerial?: string;
-  platform: "android";
+  platform: DevicePlatform;
   manufacturer?: string;
   name?: string;
   model?: string;
   androidVersion?: string;
+  /** iOS marketing OS version (e.g. "26.6.2"). */
+  iosVersion?: string;
   apiLevel?: number;
   architecture?: string;
   buildVersion?: string;
@@ -547,9 +549,9 @@ export interface TestRunner {
 
 export interface TestPlatformClient {
   readonly mode: "mock" | "real";
-  listDevices(): Promise<DeviceProfile[]>;
-  refreshDevices(): Promise<DeviceProfile[]>;
-  discoverDevices(): Promise<DeviceDiscoveryCandidate[]>;
+  listDevices(platform?: DevicePlatform): Promise<DeviceProfile[]>;
+  refreshDevices(platform?: DevicePlatform): Promise<DeviceProfile[]>;
+  discoverDevices(platform?: DevicePlatform): Promise<DeviceDiscoveryCandidate[]>;
   discoverNetworkDevices(): Promise<DeviceDiscoveryCandidate[]>;
   listNetworkObservationDecisions(): Promise<NetworkObservationDecision[]>;
   getManagedObservationAdoptionStatus(): Promise<ManagedObservationAdoptionStatus>;
@@ -579,7 +581,7 @@ export interface TestPlatformClient {
   cancelNetworkConnectionOperation(
     operationId: string,
   ): Promise<NetworkConnectionOperation>;
-  registerDevice(serial: string): Promise<DeviceProfile>;
+  registerDevice(serial: string, platform?: DevicePlatform): Promise<DeviceProfile>;
   uploadArtifact(file: File, kind: ArtifactKind): Promise<Artifact>;
   createTask(input: CreateTaskInput): Promise<TestTask>;
   listTasks(): Promise<TestTask[]>;
