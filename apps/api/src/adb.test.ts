@@ -156,19 +156,31 @@ class FakeDevice implements AdbExecutionDevice {
     return result()
   }
 
+  /** 可选：按远端输入路径解析实际字节数；默认 11（单视频 harness 的 input-video）。 */
+  inputSizeResolver: ((remotePath: string) => number | undefined) | undefined
+
   async stat(remotePath: string) {
-    if (remotePath.endsWith('input.mp4')) return { kind: 'present', value: 11, result: result(0, '11') } as const
     if (remotePath.endsWith('_stabilized.mp4')) return { kind: 'present', value: 12, result: result(0, '12') } as const
+    // 任意批处理输入名（{taskVideoId}-attempt-{n}-{原始名}.mp4）按需解析大小。
+    if (remotePath.endsWith('.mp4')) {
+      return { kind: 'present', value: this.inputSizeResolver?.(remotePath) ?? 11, result: result(0, '11') } as const
+    }
     return { kind: 'absent', result: result(1, '', 'No such file or directory') } as const
   }
 
+  markerPresent = true
+
   async exists(remotePath: string) {
-    if (remotePath.endsWith('.batch_processing_complete')) return { kind: 'present', value: true, result: result() } as const
+    if (remotePath.endsWith('.batch_processing_complete')) {
+      return { kind: 'present', value: this.markerPresent, result: result() } as const
+    }
     return { kind: 'absent', result: result(1) } as const
   }
 
+  packageRunning = true
+
   async isPackageRunning() {
-    return { kind: 'present', value: true, result: result(0, '1234') } as const
+    return { kind: 'present', value: this.packageRunning, result: result(0, '1234') } as const
   }
 
   async isPackageInstalled() { return true }
@@ -452,6 +464,11 @@ describe('AdbRunExecutor cross-module seam', () => {
       root, 'tasks', execution.taskId, 'device-runs', execution.runId,
       'videos', taskVideo.id, 'attempts', '1',
     ))
+    // 公共证据（设备快照、失败诊断）在批处理目录下，不复制到视频目录（doc §6.2/§6.3）。
+    const batchDirectory = path.join(
+      root, 'tasks', execution.taskId, 'device-runs', execution.runId, 'batch-attempts', '1',
+    )
+    const batchFailureDirectory = path.join(batchDirectory, 'diagnostics', 'failure')
     const manifest = JSON.parse(await readFile(path.join(evidenceDirectory, 'attempt-manifest.json'), 'utf8'))
     expect(manifest).toEqual({
       attemptId: firstAttempt.id,
@@ -470,7 +487,7 @@ describe('AdbRunExecutor cross-module seam', () => {
       inputFingerprint: '3dc8a2dea8c9b132b872a0acc02b82baa35a5aa5f90f6bccfd520028034881a3',
       evidenceDirectory,
     })
-    expect(JSON.parse(await readFile(path.join(evidenceDirectory, 'device-snapshot.json'), 'utf8'))).toMatchObject({
+    expect(JSON.parse(await readFile(path.join(batchDirectory, 'device-snapshot.json'), 'utf8'))).toMatchObject({
       connectionStatus: 'online',
       manufacturer: 'Example',
       model: 'MODEL-1',
@@ -481,7 +498,7 @@ describe('AdbRunExecutor cross-module seam', () => {
       observationFailures: [],
     })
     expect(JSON.parse(await readFile(
-      path.join(evidenceDirectory, 'diagnostics/failure/failure-context.json'),
+      path.join(batchFailureDirectory, 'failure-context.json'),
       'utf8',
     ))).toMatchObject({
       capturedAt: '2026-08-09T01:02:03.000Z',
@@ -495,13 +512,13 @@ describe('AdbRunExecutor cross-module seam', () => {
       adbSerial: 'SERIAL-1',
       endpointGeneration: 0,
     })
-    expect(await readFile(path.join(evidenceDirectory, 'diagnostics/failure/window.txt'), 'utf8'))
+    expect(await readFile(path.join(batchFailureDirectory, 'window.txt'), 'utf8'))
       .toContain('com.example/.MainActivity')
-    expect(await readFile(path.join(evidenceDirectory, 'diagnostics/failure/ui.xml'), 'utf8'))
+    expect(await readFile(path.join(batchFailureDirectory, 'ui.xml'), 'utf8'))
       .toContain('<hierarchy')
-    expect(await readFile(path.join(evidenceDirectory, 'diagnostics/failure/screenshot.png'), 'utf8'))
+    expect(await readFile(path.join(batchFailureDirectory, 'screenshot.png'), 'utf8'))
       .toBe('png')
-    expect(await readFile(path.join(evidenceDirectory, 'diagnostics/failure/logcat-full.txt'), 'utf8'))
+    expect(await readFile(path.join(batchFailureDirectory, 'logcat-full.txt'), 'utf8'))
       .toBe('full logcat')
     const failureEvidenceRefs = database.getTask(execution.taskId)?.runs['device-1'].failure?.evidenceRefs ?? []
     for (const evidenceRef of [
@@ -552,7 +569,10 @@ describe('AdbRunExecutor cross-module seam', () => {
       dirty: true,
       device: { serial: 'SERIAL-1', manufacturer: 'unknown', model: 'unknown' },
     })
-    expect(JSON.parse(await readFile(path.join(evidenceDirectory, 'device-snapshot.json'), 'utf8'))).toMatchObject({
+    expect(JSON.parse(await readFile(path.join(
+      root, 'tasks', execution.taskId, 'device-runs', execution.runId,
+      'batch-attempts', '1', 'device-snapshot.json',
+    ), 'utf8'))).toMatchObject({
       connectionStatus: 'offline',
       observationFailures: ['device connection is offline'],
     })
@@ -713,6 +733,91 @@ describe('AdbRunExecutor cross-module seam', () => {
       expect.objectContaining({ status: 'passed', attempts: [expect.objectContaining({ attemptNumber: 1, status: 'passed' })], primaryOutput: expect.any(Object) }),
       expect.objectContaining({ status: 'passed', attempts: [expect.objectContaining({ attemptNumber: 1, status: 'passed' })], primaryOutput: expect.any(Object) }),
     ])
+  }, 15_000)
+
+  it('re-sends the batch Action for not-started videos after a fatal batch abort, preparing the app once', async () => {
+    const { database, execution, root } = await createHarness(['first.mp4', 'second.mp4', 'third.mp4'])
+    const appConfig: AppConfig = {
+      ...defaultConfig, rootDir: root, adbPath: 'adb', tasksDir: path.join(root, 'tasks'),
+      dataDir: root, databasePath: path.join(root, 'cloud-test.sqlite'), minFreeDiskBytes: 1, pollIntervalMs: 1,
+    }
+    const runner: ProcessRunner = { async run() { return result() } }
+    let logLineHandler: (line: string) => void = () => undefined
+    let launchCount = 0
+    const device = new FakeDevice(() => {
+      launchCount += 1
+      if (launchCount === 1) {
+        // 第 1 轮：v1 完成、v2 致命失败销毁批处理服务、v3 未轮到；marker 不出现。
+        for (const line of [
+          'MORPHO: Found 3 mp4 files to process',
+          `MORPHO: Processing file 1/3: ${execution.videos[0]!.taskVideoId}-attempt-1-first.mp4`,
+          `MORPHO: Processing file 2/3: ${execution.videos[1]!.taskVideoId}-attempt-1-second.mp4`,
+          'E MorphoVideoPProc/Controller: [PIPELINE] Received Error: module=VideoStabilizer failure=12 code=6 fatal=1 frame=59 msg=decoder output buffer timeout',
+          'MORPHO: BatchProcessService destroyed',
+        ]) logLineHandler(line)
+      } else {
+        // 第 2 轮只剩 v3：正常完成并写 marker。
+        device.markerPresent = true
+        for (const line of [
+          `MORPHO: Processing file 1/1: ${execution.videos[2]!.taskVideoId}-attempt-2-third.mp4`,
+          'MORPHO: Created completion marker file: done',
+        ]) logLineHandler(line)
+      }
+    })
+    device.markerPresent = false
+    device.packageRunning = false
+    device.inputSizeResolver = (remotePath) => {
+      // harness 内容：v1='input-video'(11)、v2='input-video-1'(13)、v3='input-video-2'(13)。
+      if (remotePath.endsWith('first.mp4')) return 11
+      if (remotePath.endsWith('second.mp4')) return 13
+      if (remotePath.endsWith('third.mp4')) return 13
+      return undefined
+    }
+    let prepareCount = 0
+    const countingPreparer: AndroidAppPreparer = {
+      async prepareApplication() {
+        prepareCount += 1
+        return {
+          packageName: 'com.morphoinc.videopostprocessor', cleanInstalled: true,
+          grantedPermissions: [], handledDialogs: [], timings: { installMs: 1, permissionMs: 1 },
+        }
+      },
+    }
+    const executor = new AdbRunExecutor(
+      database, execution, createMediaChecker(), appConfig, runner,
+      {
+        gateway: { open: () => ({ device, streams: createStreams((handler) => { logLineHandler = handler }) }) },
+        createAppPreparer: () => countingPreparer,
+      },
+    )
+
+    await executor.execute()
+
+    expect(prepareCount).toBe(1)
+    const task = database.getTask(execution.taskId)!
+    expect(task.status).toBe('failed')
+    const [first, second, third] = task.videos.map((video) => task.videoRuns[video.id]['device-1'])
+    expect(first).toMatchObject({
+      status: 'passed',
+      attempts: [expect.objectContaining({ attemptNumber: 1, status: 'passed' })],
+      primaryOutput: expect.any(Object),
+    })
+    expect(second).toMatchObject({
+      status: 'failed',
+      failureCode: 'SDK_PROCESSING_FAILED',
+      attempts: [expect.objectContaining({ attemptNumber: 1, status: 'failed', failureCode: 'SDK_PROCESSING_FAILED' })],
+    })
+    expect(second.primaryOutput).toBeUndefined()
+    expect(third).toMatchObject({
+      status: 'passed',
+      attempts: [
+        expect.objectContaining({ attemptNumber: 1, status: 'failed', failureCode: 'BATCH_ABORTED_BEFORE_START' }),
+        expect.objectContaining({ attemptNumber: 2, status: 'passed' }),
+      ],
+      primaryOutput: expect.any(Object),
+    })
+    // 两轮各一次批处理 Action；应用准备只发生一次。
+    expect(launchCount).toBe(2)
   }, 15_000)
 
   it('stops a stale network Attempt before APK preparation and retries with the current generation', async () => {

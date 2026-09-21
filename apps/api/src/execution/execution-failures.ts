@@ -33,6 +33,9 @@ const failureDefinitions = {
   APK_INSTALL_FAILED: definition('infrastructure', 'conditional', 'confirmed'),
   APP_CRASHED: definition('business', 'conditional', 'confirmed'),
   APP_LAUNCH_FAILED: definition('protocol', 'conditional', 'confirmed'),
+  // 目录批处理在当前视频开始前中止（真机验证：其他视频的致命失败会销毁整批服务）。
+  // 归类 business：设备本身可用，编排层会用下一轮批处理 Action 给该视频新的执行机会。
+  BATCH_ABORTED_BEFORE_START: definition('business', 'conditional', 'confirmed'),
   DEVICE_CLEANUP_FAILED: definition('infrastructure', 'safe', 'confirmed'),
   DEVICE_IDENTITY_MISMATCH: definition('device', 'never', 'confirmed'),
   DEVICE_IDENTITY_UNVERIFIED: definition('observation', 'conditional', 'unknown'),
