@@ -82,6 +82,74 @@ export interface ProtocolExecutionResult {
   logcatWarning?: string
 }
 
+/** 目录批处理中一条视频的执行请求：输入、远端路径、本地证据目录和视频级 Reporter。 */
+export interface BatchVideoRequest {
+  taskVideoId: string
+  originalName: string
+  localPath: string
+  /** 每条视频各自的 remoteInputFile / remoteOutputFile；目录与 marker 与整批共享。 */
+  paths: ApkExecutionPaths
+  local: {
+    runDirectory: string
+    resultPath: string
+    outputPath: string
+  }
+  reporter: ProtocolExecutionReporter
+}
+
+/** 一次目录批处理 Action 的执行上下文（doc §7.3：一批视频只发一次 Action）。 */
+export interface BatchExecutionContext {
+  executionKey: string
+  taskId: string
+  protocol: ApkExecutionProtocol
+  /** 整批共享的路径：输入目录、输出目录、完成 marker。 */
+  paths: ApkExecutionPaths
+  videos: BatchVideoRequest[]
+  local: {
+    runDirectory: string
+    logcatPath: string
+    diagnosticsDirectory: string
+  }
+  configuredTimeoutSeconds: number
+  signal: AbortSignal
+  /** 批级事件（启动、marker 等待、清理）；编排层路由到设备级作用域。 */
+  reporter: ProtocolExecutionReporter
+}
+
+export type BatchVideoStatus = 'converged' | 'failed' | 'not_started'
+
+export interface BatchVideoOutcome {
+  taskVideoId: string
+  status: BatchVideoStatus
+  inputSizeBytes?: number
+  output?: {
+    remoteOutputFile: string
+    outputSizeBytes: number
+    outputSha256: string
+  }
+  failure?: {
+    code: string
+    message: string
+  }
+}
+
+export interface BatchExecutionResult {
+  /** true = APK 在写 marker 前销毁了批处理服务（真机验证：单条致命失败会中止整批）。 */
+  batchAborted: boolean
+  outcomes: BatchVideoOutcome[]
+}
+
+/** 支持目录批处理的协议执行器；未实现者由编排层按视频逐条调用 execute。 */
+export interface DirectoryBatchProtocolExecutor extends ProtocolExecutor {
+  executeBatch(context: BatchExecutionContext): Promise<BatchExecutionResult>
+}
+
+export function isDirectoryBatchExecutor(
+  executor: ProtocolExecutor,
+): executor is DirectoryBatchProtocolExecutor {
+  return typeof (executor as DirectoryBatchProtocolExecutor).executeBatch === 'function'
+}
+
 export interface ProtocolExecutor {
   execute(context: ProtocolExecutionContext): Promise<ProtocolExecutionResult>
 }
@@ -168,7 +236,11 @@ export abstract class BaseProtocolExecutor implements ProtocolExecutor {
   }
 
   protected startLogcat(
-    context: ProtocolExecutionContext,
+    context: {
+      executionKey: string
+      signal: AbortSignal
+      local: { logcatPath: string }
+    },
     tags: readonly string[],
     onLine: (line: string) => void,
     onEvent: (event: LogcatStreamEvent) => void,
@@ -184,7 +256,12 @@ export abstract class BaseProtocolExecutor implements ProtocolExecutor {
     )
   }
 
-  protected async captureFailureLogcat(context: ProtocolExecutionContext) {
+  protected async captureFailureLogcat(context: {
+    executionKey: string
+    signal: AbortSignal
+    reporter: ProtocolExecutionReporter
+    local: { diagnosticsDirectory: string }
+  }) {
     await this.dependencies.streams.captureLogcatSnapshot(
       context.executionKey,
       path.join(context.local.diagnosticsDirectory, 'logcat-full-failure.txt'),
@@ -199,7 +276,11 @@ export abstract class BaseProtocolExecutor implements ProtocolExecutor {
   }
 
   protected async collectOutput(
-    context: ProtocolExecutionContext,
+    context: {
+      signal: AbortSignal
+      reporter: ProtocolExecutionReporter
+      local: { outputPath: string }
+    },
     remoteOutputFile: string,
   ): Promise<Omit<ProtocolExecutionResult, 'inputSizeBytes' | 'logcatWarning'>> {
     context.reporter.update('validating_output', 78, '正在验证 APK 生成的输出 MP4')
@@ -234,7 +315,7 @@ export abstract class BaseProtocolExecutor implements ProtocolExecutor {
   }
 
   protected async bestEffortDeviceRun(
-    context: ProtocolExecutionContext,
+    context: { reporter: ProtocolExecutionReporter },
     args: string[],
     description: string,
   ) {

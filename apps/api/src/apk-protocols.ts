@@ -378,6 +378,18 @@ export interface MorphoLogSignal {
   message?: string
   failureMessage?: string
   outputPath?: string
+  /** `Processing file i/n: name` 的结构化形式，用于批处理时定位当前在处理的视频。 */
+  processingFile?: {
+    index: number
+    total: number
+    fileName: string
+  }
+  /** `[PIPELINE] Received Error: ... fatal=1`：当前视频的致命 SDK 失败。 */
+  pipelineFatal?: string
+  /** `BatchProcessService destroyed`：成功收尾和致命中止都会出现，须结合 marker 判断。 */
+  serviceDestroyed?: boolean
+  /** `Created completion marker file`：marker 已写入的日志侧信号。 */
+  markerCreated?: boolean
 }
 
 export function parseMorphoLogLine(line: string): MorphoLogSignal | undefined {
@@ -390,8 +402,38 @@ export function parseMorphoLogLine(line: string): MorphoLogSignal | undefined {
   }
   if (line.includes('Starting batch processing for path:')) return { businessStarted: true, progress: 48, message: 'Morpho 批处理服务已开始扫描输入目录' }
   if (/Found\s+\d+\s+mp4/i.test(line) || line.includes('Found mp4 file:')) return { businessStarted: true, progress: 52, message: 'Morpho 已发现输入 MP4' }
+  const processingFile = /Processing file (\d+)\/(\d+):\s*(.+?)(?:\s*$)/.exec(line)
+  if (processingFile) {
+    return {
+      businessStarted: true,
+      progress: 58,
+      message: `Morpho 正在处理输入 MP4（第 ${processingFile[1]}/${processingFile[2]} 条）`,
+      processingFile: {
+        index: Number(processingFile[1]),
+        total: Number(processingFile[2]),
+        fileName: processingFile[3].trim(),
+      },
+    }
+  }
   if (line.includes('Processing file ')) return { businessStarted: true, progress: 58, message: 'Morpho 正在处理输入 MP4' }
   if (line.includes('Input:')) return { businessStarted: true, progress: 62, message: 'Morpho SDK 已读取输入路径' }
+  // 2026-09-18 真机（Xiaomi 25060RK16C）：致命失败形态是 pipeline fatal 错误，
+  // 随后 BatchProcessService destroyed 且不再写 marker；失败视频可能留下半截输出。
+  const pipelineFatal = /\[PIPELINE\] Received Error:.*fatal=1.*msg=(.+)$/i.exec(line)
+  if (pipelineFatal) {
+    return {
+      businessStarted: true,
+      progress: 65,
+      message: `Morpho SDK 致命失败：${pipelineFatal[1]}`,
+      pipelineFatal: pipelineFatal[1].trim(),
+    }
+  }
+  if (line.includes('BatchProcessService destroyed')) {
+    return { serviceDestroyed: true, message: 'Morpho 批处理服务已销毁' }
+  }
+  if (line.includes('Created completion marker file')) {
+    return { markerCreated: true, message: 'Morpho 已写入批处理完成标记' }
+  }
   const output = /Output:\s*(.+\.mp4)\s*$/i.exec(line)
   if (output) {
     return {

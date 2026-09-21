@@ -152,6 +152,31 @@ describe('APK execution protocol registry', () => {
     })
   })
 
+  it('parses the directory-batch signals observed on real devices', () => {
+    // Step 0 真机日志形态（2026-09-18 Honor/Xiaomi）。
+    expect(parseMorphoLogLine(
+      '09-18 16:39:32.561 15284 15335 I MORPHO  : Processing file 2/3: vid-b.mp4',
+    )).toMatchObject({
+      businessStarted: true,
+      processingFile: { index: 2, total: 3, fileName: 'vid-b.mp4' },
+    })
+    expect(parseMorphoLogLine(
+      '09-18 14:33:12.526 8893 11272 E MorphoVideoPProc/Controller: [PIPELINE] Received Error: module=VideoStabilizer failure=12 code=6 fatal=1 frame=59 msg=video_stabilizer SDK process failed',
+    )).toMatchObject({
+      pipelineFatal: 'video_stabilizer SDK process failed',
+    })
+    expect(parseMorphoLogLine(
+      '09-18 14:33:12.540 8893  8893 I MORPHO  : BatchProcessService destroyed',
+    )).toMatchObject({ serviceDestroyed: true })
+    expect(parseMorphoLogLine(
+      '09-18 16:41:10.758 15284 15335 I MORPHO  : Created completion marker file: /storage/emulated/0/Android/data/com.morphoinc.videopostprocessor/files/VideoStabilizerDataPack/.batch_processing_complete',
+    )).toMatchObject({ markerCreated: true })
+    // 非致命 pipeline 事件（fatal=0）不得当成失败。
+    expect(parseMorphoLogLine(
+      'E MorphoVideoPProc/Controller: [PIPELINE] Received Error: module=Decoder failure=1 code=2 fatal=0 frame=3 msg=recoverable',
+    )).toBeUndefined()
+  })
+
   it('scales the batch deadline by participating video count only for directory-batch protocols', () => {
     const morpho = findApkExecutionProtocol('com.morphoinc.videopostprocessor')!
     const carrier = findApkExecutionProtocol('com.sdktest.platform')!

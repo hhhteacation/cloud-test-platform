@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
@@ -382,5 +382,354 @@ describe('MorphoProtocolExecutor seam', () => {
       message: expect.stringContaining('force-stop denied'),
       level: 'warning',
     })
+  })
+})
+
+interface BatchScenario {
+  launchLines?: string[]
+  markerObservation?: AdbObservation<boolean>
+  /** 按输出文件名（basename）指定 stat 结果，未指定的输出默认 present(12)。 */
+  outputStats?: Map<string, AdbObservation<number>>
+  /** 按输入文件名（basename）覆盖远端大小，用于构造 push 校验失败。 */
+  inputSizeOverrides?: Map<string, number>
+  processRunning?: boolean
+  cancelled?: boolean
+}
+
+class BatchMorphoDevice implements ProtocolExecutionDevice {
+  readonly commands: string[][] = []
+  onLaunch?: () => void
+
+  constructor(
+    private readonly localInputSizes: Map<string, number>,
+    private readonly scenario: BatchScenario,
+  ) {}
+
+  async run(args: string[]): Promise<ProcessResult> {
+    this.commands.push(args)
+    if (args[0] === 'shell' && args[1] === 'am' && args[2] === 'start') {
+      this.onLaunch?.()
+    }
+    if (args[0] === 'pull') await writeFile(args[2]!, 'output-video')
+    return processResult()
+  }
+
+  async observe(
+    args: string[],
+    _signal: AbortSignal,
+    _timeoutMs?: number,
+    capture?: { captureStdoutPath?: string; captureStderrPath?: string },
+  ): Promise<ProcessResult> {
+    let result: ProcessResult
+    if (args.includes('services')) {
+      result = processResult(0, 'ServiceRecord com.morphoinc.videopostprocessor/.BatchProcessService')
+    } else if (args.includes('pidof')) {
+      result = this.scenario.processRunning === false ? processResult(1, '') : processResult(0, '1234')
+    } else if (args.includes('power')) {
+      result = processResult(0, 'mWakefulness: Awake\nmInteractive=true')
+    } else if (args.includes('policy')) {
+      result = processResult(0, 'interactiveState=INTERACTIVE_STATE_AWAKE')
+    } else {
+      result = processResult()
+    }
+    if (capture?.captureStdoutPath) await writeFile(capture.captureStdoutPath, result.stdout)
+    if (capture?.captureStderrPath) await writeFile(capture.captureStderrPath, result.stderr)
+    return result
+  }
+
+  async stat(remotePath: string): Promise<AdbObservation<number>> {
+    const name = remotePath.split('/').pop()!
+    if (name.endsWith('_stabilized.mp4')) {
+      return this.scenario.outputStats?.get(name) ?? present(12)
+    }
+    if (this.scenario.inputSizeOverrides?.has(name)) {
+      return present(this.scenario.inputSizeOverrides.get(name)!)
+    }
+    return present(this.localInputSizes.get(name) ?? 12)
+  }
+
+  async exists(remotePath: string): Promise<AdbObservation<boolean>> {
+    if (remotePath.endsWith('.batch_processing_complete')) {
+      return this.scenario.markerObservation ?? present(true)
+    }
+    return absent()
+  }
+
+  async isPackageRunning(): Promise<AdbObservation<boolean>> {
+    return present(this.scenario.processRunning !== false)
+  }
+}
+
+async function createBatchHarness(videoNames: string[], scenario: BatchScenario = {}) {
+  const root = await mkdtemp(path.join(tmpdir(), 'morpho-batch-executor-'))
+  roots.push(root)
+  const protocol = findApkExecutionProtocol('com.morphoinc.videopostprocessor')!
+  const batchRoot = path.join(root, 'batch-attempts', '1')
+  const localInputSizes = new Map<string, number>()
+  const videos = videoNames.map((name, index) => {
+    const localPath = path.join(root, `source-${index}.mp4`)
+    return { name, localPath, content: `input-video-${index}` }
+  })
+  for (const video of videos) {
+    await writeFile(video.localPath, video.content)
+  }
+
+  const sharedPaths = buildExecutionPaths(protocol, {
+    taskId: 'task-1',
+    manufacturer: 'HONOR',
+    model: 'ALI-AN00',
+    inputFileName: videos[0]!.name,
+  })
+  const requests = videos.map((video, index) => {
+    const paths = buildExecutionPaths(protocol, {
+      taskId: 'task-1',
+      manufacturer: 'HONOR',
+      model: 'ALI-AN00',
+      inputFileName: video.name,
+    })
+    localInputSizes.set(paths.remoteInputFile.split('/').pop()!, Buffer.byteLength(video.content))
+    const runDirectory = path.join(batchRoot, 'videos', `task-video-${index + 1}`, 'attempts', '1')
+    const logs: Array<{ message: string; level: string }> = []
+    const checks: Array<{ key: string; status: string }> = []
+    const progress: number[] = []
+    const reporter: ProtocolExecutionReporter = {
+      update: vi.fn(),
+      addLog: (message, level = 'info') => logs.push({ message, level }),
+      setProcessingProgress: (value) => progress.push(value),
+      upsertCheck: (check) => checks.push({ key: check.key, status: check.status }),
+      isCancelled: () => Boolean(scenario.cancelled),
+    }
+    return {
+      taskVideoId: `task-video-${index + 1}`,
+      originalName: video.name,
+      localPath: video.localPath,
+      paths,
+      local: {
+        runDirectory,
+        resultPath: path.join(runDirectory, 'result.json'),
+        outputPath: path.join(runDirectory, 'output.mp4'),
+      },
+      reporter,
+      logs,
+      checks,
+      progress,
+    }
+  })
+
+  const device = new BatchMorphoDevice(localInputSizes, scenario)
+  const batchLogs: string[] = []
+  const batchReporter: ProtocolExecutionReporter = {
+    update: vi.fn(),
+    addLog: (message) => batchLogs.push(message),
+    setProcessingProgress: vi.fn(),
+    upsertCheck: vi.fn(),
+    isCancelled: () => Boolean(scenario.cancelled),
+  }
+  let lineHandler: (line: string) => void = () => undefined
+  const streams: ProtocolExecutionStreams = {
+    async startLogcat(_key, _target, _signal, _tags, onLine) {
+      lineHandler = onLine
+      return async () => undefined
+    },
+    captureLogcatSnapshot: vi.fn(async () => undefined),
+  }
+  device.onLaunch = () => {
+    for (const line of scenario.launchLines ?? []) lineHandler(line)
+  }
+  let now = 0
+  const executor = new MorphoProtocolExecutor({
+    device,
+    streams,
+    pollIntervalMs: 1_000,
+    maxLogcatBytes: 1_024,
+    minFreeDiskBytes: 1,
+    now: () => now,
+    delay: async (ms, signal) => {
+      if (signal.aborted) throw new DOMException('任务已取消', 'AbortError')
+      now += ms
+    },
+  })
+  await Promise.all(requests.map((request) => mkdir(request.local.runDirectory, { recursive: true })))
+  const context: BatchExecutionContext = {
+    executionKey: 'batch-1',
+    taskId: 'task-1',
+    protocol,
+    paths: sharedPaths,
+    videos: requests,
+    local: {
+      runDirectory: batchRoot,
+      logcatPath: path.join(batchRoot, 'logcat.txt'),
+      diagnosticsDirectory: path.join(batchRoot, 'diagnostics'),
+    },
+    configuredTimeoutSeconds: 30,
+    signal: new AbortController().signal,
+    reporter: batchReporter,
+  }
+  return { context, device, executor, requests, batchLogs, outputDirectory: sharedPaths.remoteOutputDirectory }
+}
+
+describe('MorphoProtocolExecutor directory batch', () => {
+  it('pushes all inputs once, sends one Action, and converges every video output', async () => {
+    const harness = await createBatchHarness(['tv-1-input.mp4', 'tv-2-input.mp4', 'tv-3-input.mp4'], {
+      launchLines: [
+        'MORPHO: Found 3 mp4 files to process',
+        'MORPHO: Processing file 1/3: tv-1-input.mp4',
+        `MORPHO: Output: ${buildExecutionPaths(findApkExecutionProtocol('com.morphoinc.videopostprocessor')!, { taskId: 'task-1', manufacturer: 'HONOR', model: 'ALI-AN00', inputFileName: 'tv-1-input.mp4' }).remoteOutputFile}`,
+        'MORPHO: Processing file 2/3: tv-2-input.mp4',
+        // 第二条视频故意不发 Output 行：收敛必须回退到确定性命名。
+        'MORPHO: Processing file 3/3: tv-3-input.mp4',
+        `MORPHO: Output: ${buildExecutionPaths(findApkExecutionProtocol('com.morphoinc.videopostprocessor')!, { taskId: 'task-1', manufacturer: 'HONOR', model: 'ALI-AN00', inputFileName: 'tv-3-input.mp4' }).remoteOutputFile}`,
+        `MORPHO: Created completion marker file: ${findApkExecutionProtocol('com.morphoinc.videopostprocessor')!.completion.remotePathTemplate.replaceAll('{packageName}', 'com.morphoinc.videopostprocessor')}`,
+        'MORPHO: BatchProcessService destroyed',
+      ],
+    })
+
+    const result = await harness.executor.executeBatch(harness.context)
+
+    expect(result.batchAborted).toBe(false)
+    expect(result.outcomes.map((outcome) => [outcome.taskVideoId, outcome.status])).toEqual([
+      ['task-video-1', 'converged'],
+      ['task-video-2', 'converged'],
+      ['task-video-3', 'converged'],
+    ])
+    // 每条视频的输出都拉到自己的 attempt 目录并写了 result.json。
+    for (const request of harness.requests) {
+      const outcome = result.outcomes.find((entry) => entry.taskVideoId === request.taskVideoId)!
+      expect(outcome.output?.remoteOutputFile).toBe(request.paths.remoteOutputFile)
+      expect(await readFile(request.local.outputPath, 'utf8')).toBe('output-video')
+      expect(JSON.parse(await readFile(request.local.resultPath, 'utf8'))).toMatchObject({
+        status: 'passed',
+        batch: { taskVideoId: request.taskVideoId },
+        output: { originalRemotePath: request.paths.remoteOutputFile },
+      })
+      expect(request.checks).toEqual(expect.arrayContaining([
+        { key: 'input', status: 'passed' },
+        { key: 'processing', status: 'passed' },
+        { key: 'output_generated', status: 'passed' },
+      ]))
+    }
+    // 只发一次批处理 Action；三条输入各 push 一次；清理覆盖全部输入/输出/marker。
+    const launches = harness.device.commands.filter((args) =>
+      args.some((argument) => argument.endsWith('ACTION_BATCH_PROCESS')))
+    expect(launches).toHaveLength(1)
+    const pushes = harness.device.commands.filter((args) => args[0] === 'push')
+    expect(pushes).toHaveLength(3)
+    const cleanup = harness.device.commands.filter((args) => args.includes('rm') && args.includes('-f'))
+    for (const request of harness.requests) {
+      expect(cleanup).toEqual(expect.arrayContaining([
+        expect.arrayContaining([request.paths.remoteInputFile, request.paths.remoteOutputFile]),
+      ]))
+    }
+  })
+
+  it('converges finished videos, fails the fatal one, and leaves the rest not_started on batch abort', async () => {
+    const harness = await createBatchHarness(['tv-1-input.mp4', 'tv-2-input.mp4', 'tv-3-input.mp4'], {
+      markerObservation: absent(),
+      processRunning: false,
+      launchLines: [
+        'MORPHO: Found 3 mp4 files to process',
+        'MORPHO: Processing file 1/3: tv-1-input.mp4',
+        `MORPHO: Output: ${buildExecutionPaths(findApkExecutionProtocol('com.morphoinc.videopostprocessor')!, { taskId: 'task-1', manufacturer: 'HONOR', model: 'ALI-AN00', inputFileName: 'tv-1-input.mp4' }).remoteOutputFile}`,
+        'MORPHO: Processing file 2/3: tv-2-input.mp4',
+        'E MorphoVideoPProc/Controller: [PIPELINE] Received Error: module=VideoStabilizer failure=12 code=6 fatal=1 frame=59 msg=video_stabilizer SDK process failed',
+        'MORPHO: BatchProcessService destroyed',
+      ],
+    })
+
+    const result = await harness.executor.executeBatch(harness.context)
+
+    expect(result.batchAborted).toBe(true)
+    expect(result.outcomes.map((outcome) => [outcome.taskVideoId, outcome.status])).toEqual([
+      ['task-video-1', 'converged'],
+      ['task-video-2', 'failed'],
+      ['task-video-3', 'not_started'],
+    ])
+    expect(result.outcomes[1]!.failure).toMatchObject({
+      code: 'SDK_PROCESSING_FAILED',
+      message: expect.stringContaining('video_stabilizer SDK process failed'),
+    })
+    // 已收敛视频的输出依然回收成功，失败视频不写 result.json。
+    expect(await readFile(harness.requests[0]!.local.outputPath, 'utf8')).toBe('output-video')
+    await expect(readFile(harness.requests[1]!.local.resultPath, 'utf8')).rejects.toThrow()
+  })
+
+  it('fails only the video whose output is missing after the marker', async () => {
+    const protocol = findApkExecutionProtocol('com.morphoinc.videopostprocessor')!
+    const missingOutput = buildExecutionPaths(protocol, {
+      taskId: 'task-1', manufacturer: 'HONOR', model: 'ALI-AN00', inputFileName: 'tv-2-input.mp4',
+    }).remoteOutputFile.split('/').pop()!
+    const harness = await createBatchHarness(['tv-1-input.mp4', 'tv-2-input.mp4'], {
+      outputStats: new Map([[missingOutput, absent<number>()]]),
+      launchLines: [
+        'MORPHO: Found 2 mp4 files to process',
+        'MORPHO: Processing file 1/3: tv-1-input.mp4'.replace('1/3', '1/2'),
+        'MORPHO: Processing file 2/2: tv-2-input.mp4',
+        'MORPHO: Created completion marker file: done',
+      ],
+    })
+
+    const result = await harness.executor.executeBatch(harness.context)
+
+    expect(result.batchAborted).toBe(false)
+    expect(result.outcomes.map((outcome) => [outcome.taskVideoId, outcome.status])).toEqual([
+      ['task-video-1', 'converged'],
+      ['task-video-2', 'failed'],
+    ])
+    expect(result.outcomes[1]!.failure?.code).toBe('OUTPUT_MISSING')
+  })
+
+  it('marks every video not_started when the service dies without any failure signal', async () => {
+    const harness = await createBatchHarness(['tv-1-input.mp4', 'tv-2-input.mp4'], {
+      markerObservation: absent(),
+      processRunning: false,
+      launchLines: ['MORPHO: BatchProcessService destroyed'],
+    })
+
+    const result = await harness.executor.executeBatch(harness.context)
+
+    expect(result.batchAborted).toBe(true)
+    expect(result.outcomes.map((outcome) => outcome.status)).toEqual(['not_started', 'not_started'])
+  })
+
+  it('rejects an input whose remote size mismatches after push', async () => {
+    const harness = await createBatchHarness(['tv-1-input.mp4', 'tv-2-input.mp4'], {
+      inputSizeOverrides: new Map([['tv-2-input.mp4', 1]]),
+    })
+
+    await expect(harness.executor.executeBatch(harness.context)).rejects.toMatchObject({
+      code: 'INPUT_PUSH_FAILED',
+    })
+    // 准备失败也要清理已推送的输入与输出目录。
+    const cleanup = harness.device.commands.filter((args) => args.includes('rm'))
+    expect(cleanup.length).toBeGreaterThan(0)
+  })
+
+  it('times out the whole batch Action with the scaled deadline', async () => {
+    const harness = await createBatchHarness(['tv-1-input.mp4', 'tv-2-input.mp4'], {
+      markerObservation: absent(),
+      launchLines: ['MORPHO: Processing file 1/2: tv-1-input.mp4'],
+    })
+    harness.context.configuredTimeoutSeconds = 1
+
+    await expect(harness.executor.executeBatch(harness.context)).rejects.toMatchObject({
+      code: 'TASK_TIMEOUT',
+      message: expect.stringContaining('2 秒'),
+    })
+  })
+
+  it('stops on cancellation and still cleans up remote files', async () => {
+    const harness = await createBatchHarness(['tv-1-input.mp4'], {
+      cancelled: true,
+      markerObservation: absent(),
+      launchLines: ['MORPHO: Processing file 1/1: tv-1-input.mp4'],
+    })
+
+    await expect(harness.executor.executeBatch(harness.context)).rejects.toMatchObject({
+      name: 'AbortError',
+    })
+    expect(harness.device.commands).toEqual(expect.arrayContaining([
+      ['shell', 'am', 'force-stop', harness.context.protocol.packageName],
+      expect.arrayContaining(['shell', 'rm', '-f', harness.context.paths.remoteCompletionPath]),
+    ]))
   })
 })
