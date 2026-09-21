@@ -8,6 +8,7 @@ import { PlatformDatabase } from "./database.js";
 import { AndroidAdbDeviceProvider } from "./devices/android-adb-provider.js";
 import { AdbTrackDevicesWatcher } from "./devices/adb-track-devices-watcher.js";
 import { DeviceRegistryService } from "./devices/device-registry.js";
+import { IosLibimobiledeviceProvider } from "./devices/ios-device-provider.js";
 import {
   ManagedObservationAdoptionGate,
   runManagedObservationCycle,
@@ -50,8 +51,14 @@ export async function buildServer(options: BuildServerOptions = {}) {
     config.adbPath,
     (command, args, runOptions) => processRunner.run(command, args, runOptions),
   );
+  const iosDeviceProvider = new IosLibimobiledeviceProvider(
+    "idevice_id",
+    "ideviceinfo",
+    (command, args, runOptions) => processRunner.run(command, args, runOptions),
+  );
   const deviceRegistry = new DeviceRegistryService(database, [
     androidDeviceProvider,
+    iosDeviceProvider,
   ], {
     connectionOperationDeadlineMs: config.attemptRecoveryDeadlineMs,
     managedObservationAdoptionEnabled: config.managedObservationAdoptionEnabled,

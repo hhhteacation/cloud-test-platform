@@ -10,7 +10,7 @@ export function registerSystemRoutes(app: FastifyInstance, deviceRegistry: Devic
       status: 'ok',
       service: 'sdk-video-compat-api',
       accessMode: 'local-single-user',
-      platforms: { android: 'available', ios: 'planned', harmonyos: 'planned' },
+      platforms: { android: 'available', ios: 'partial', harmonyos: 'planned' },
       devices: {
         registered: devices.length,
         online: devices.filter((device) => device.connectionStatus === 'online').length,

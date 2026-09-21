@@ -66,8 +66,18 @@ function abortReason(signal: AbortSignal) {
     : new Error("ADB 扫描已取消");
 }
 
-function stableDeviceId(serial: string) {
-  return `adb-${createHash("sha256").update(serial).digest("hex").slice(0, 16)}`;
+function stableDeviceId(serial: string, platform: DevicePlatform = "android") {
+  const prefix = platform === "ios" ? "ios" : "adb";
+  return `${prefix}-${createHash("sha256").update(serial).digest("hex").slice(0, 16)}`;
+}
+
+function osVersionLabel(candidate: DeviceDiscoveryCandidate): string | undefined {
+  if (candidate.platform === "ios") {
+    return candidate.iosVersion ? `iOS ${candidate.iosVersion}` : "iOS";
+  }
+  return candidate.androidVersion
+    ? `Android ${candidate.androidVersion}`
+    : undefined;
 }
 
 function endpointMap(endpoints: DeviceEndpoint[]) {
@@ -602,9 +612,7 @@ export class DeviceRegistryService {
                 name: verified.candidate.name,
                 manufacturer: verified.candidate.manufacturer,
                 model: verified.candidate.model,
-                osVersion: verified.candidate.androidVersion
-                  ? `Android ${verified.candidate.androidVersion}`
-                  : undefined,
+                osVersion: osVersionLabel(verified.candidate),
                 apiLevel: verified.candidate.apiLevel,
                 architecture: verified.candidate.architecture,
                 buildVersion: verified.candidate.buildVersion,
@@ -1357,18 +1365,20 @@ export class DeviceRegistryService {
 
     const existing = this.database.getDeviceBySerial(serial);
     return this.database.upsertAdbDevice({
-      id: existing?.id ?? stableDeviceId(serial),
+      id: existing?.id ?? stableDeviceId(serial, platform),
       serial,
       name: candidate.name ?? candidate.model ?? serial,
-      manufacturer: candidate.manufacturer ?? "Android",
+      manufacturer:
+        candidate.manufacturer ?? (platform === "ios" ? "Apple" : "Android"),
       model: candidate.model,
-      osVersion: candidate.androidVersion
-        ? `Android ${candidate.androidVersion}`
-        : "Android",
+      osVersion:
+        osVersionLabel(candidate) ?? (platform === "ios" ? "iOS" : "Android"),
       apiLevel: candidate.apiLevel ?? 0,
       architecture: candidate.architecture ?? "unknown",
       buildVersion: candidate.buildVersion,
       securityPatch: candidate.securityPatch,
+      platform,
+      executionMode: platform === "ios" ? "xctest" : "adb",
     });
   }
 
@@ -1777,9 +1787,7 @@ export class DeviceRegistryService {
       name: candidate.name,
       manufacturer: candidate.manufacturer,
       model: candidate.model,
-      osVersion: candidate.androidVersion
-        ? `Android ${candidate.androidVersion}`
-        : undefined,
+      osVersion: osVersionLabel(candidate),
       apiLevel: candidate.apiLevel,
       architecture: candidate.architecture,
       buildVersion: candidate.buildVersion,
@@ -3009,9 +3017,7 @@ export class DeviceRegistryService {
       name: candidate.name,
       manufacturer: candidate.manufacturer,
       model: candidate.model,
-      osVersion: candidate.androidVersion
-        ? `Android ${candidate.androidVersion}`
-        : undefined,
+      osVersion: osVersionLabel(candidate),
       apiLevel: candidate.apiLevel,
       architecture: candidate.architecture,
       buildVersion: candidate.buildVersion,

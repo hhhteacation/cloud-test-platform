@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify'
 
 import { DeviceRegistrationError, type DeviceRegistryService } from '../devices/device-registry.js'
+import type { DevicePlatform } from '../types.js'
 
 function handleDeviceError(request: { log: { error: (error: unknown) => void } }, reply: { code: (status: number) => { send: (body: unknown) => unknown } }, error: unknown, fallback: string) {
   if (error instanceof DeviceRegistrationError) {
@@ -23,20 +24,28 @@ export function registerDeviceRoutes(
   deviceRegistry: DeviceRegistryService,
   observability?: DeviceRouteObservability,
 ) {
-  app.get('/api/devices', async () => deviceRegistry.listRegisteredSnapshot('android'))
+  // HarmonyOS has no provider yet; unknown/absent values stay on Android.
+  const platformQuery = (value: unknown): DevicePlatform =>
+    value === 'ios' ? 'ios' : 'android'
 
-  app.post('/api/devices/refresh', async (request, reply) => {
-    try { return await deviceRegistry.refreshRegistered('android') }
+  app.get<{ Querystring: { platform?: string } }>('/api/devices', async (request) =>
+    deviceRegistry.listRegisteredSnapshot(platformQuery(request.query?.platform)))
+
+  app.post<{ Querystring: { platform?: string } }>('/api/devices/refresh', async (request, reply) => {
+    const platform = platformQuery(request.query?.platform)
+    try { return await deviceRegistry.refreshRegistered(platform) }
     catch (error) { return handleDeviceError(request, reply, error, 'ADB 设备状态刷新失败，请检查 adb 路径和设备连接') }
   })
 
-  app.post('/api/devices/discover', async (request, reply) => {
-    try { return await deviceRegistry.discover('android') }
+  app.post<{ Querystring: { platform?: string } }>('/api/devices/discover', async (request, reply) => {
+    const platform = platformQuery(request.query?.platform)
+    try { return await deviceRegistry.discover(platform) }
     catch (error) { return handleDeviceError(request, reply, error, 'ADB 设备扫描失败，请检查 adb 路径和 USB 连接') }
   })
 
-  app.post('/api/devices/network/discover', async (request, reply) => {
-    try { return await deviceRegistry.discoverNetwork('android') }
+  app.post<{ Querystring: { platform?: string } }>('/api/devices/network/discover', async (request, reply) => {
+    const platform = platformQuery(request.query?.platform)
+    try { return await deviceRegistry.discoverNetwork(platform) }
     catch (error) { return handleDeviceError(request, reply, error, '联网 ADB 服务发现失败') }
   })
 
@@ -54,9 +63,9 @@ export function registerDeviceRoutes(
     ))
   }
 
-  app.post<{ Body: { serial?: string } }>('/api/devices/register', async (request, reply) => {
+  app.post<{ Body: { serial?: string; platform?: string } }>('/api/devices/register', async (request, reply) => {
     try {
-      const device = await deviceRegistry.register(request.body?.serial ?? '', 'android')
+      const device = await deviceRegistry.register(request.body?.serial ?? '', platformQuery(request.body?.platform))
       return reply.code(201).send({ ...device, connectionStatus: 'online' })
     } catch (error) {
       return handleDeviceError(request, reply, error, '设备录入失败')

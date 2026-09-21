@@ -1,7 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite'
 
 import { mapDeviceRow } from '../mappers.js'
-import type { DeviceProfile } from '../../types.js'
+import type { DevicePlatform, DeviceProfile } from '../../types.js'
 import { now, type Row } from './shared.js'
 
 export interface UpsertAdbDeviceInput {
@@ -15,6 +15,9 @@ export interface UpsertAdbDeviceInput {
   architecture: string
   buildVersion?: string
   securityPatch?: string
+  /** Defaults to "android"; iOS discovery passes "ios" with executionMode "xctest". */
+  platform?: DevicePlatform
+  executionMode?: DeviceProfile['executionMode']
 }
 
 /** Owns registered-device persistence; discovery remains outside this Store. */
@@ -56,23 +59,25 @@ export class DeviceStore {
 
   upsertAdb(input: UpsertAdbDeviceInput) {
     const timestamp = now()
+    const platform = input.platform ?? 'android'
+    const executionMode = input.executionMode ?? 'adb'
     this.db.prepare(`
       INSERT INTO devices (
         id, platform, name, manufacturer, model, os_version, api_level,
         architecture, execution_mode, eligible, serial, build_version,
         security_patch, registered_at, last_seen_at
-      ) VALUES (?, 'android', ?, ?, ?, ?, ?, ?, 'adb', 1, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
       ON CONFLICT(serial) WHERE serial IS NOT NULL AND serial <> '' DO UPDATE SET
         name = excluded.name, manufacturer = excluded.manufacturer,
         model = excluded.model, os_version = excluded.os_version,
         api_level = excluded.api_level, architecture = excluded.architecture,
-        execution_mode = 'adb', eligible = 1,
+        execution_mode = excluded.execution_mode, eligible = 1,
         build_version = excluded.build_version,
         security_patch = excluded.security_patch,
         last_seen_at = excluded.last_seen_at
     `).run(
-      input.id, input.name, input.manufacturer, input.model ?? null,
-      input.osVersion, input.apiLevel, input.architecture, input.serial,
+      input.id, platform, input.name, input.manufacturer, input.model ?? null,
+      input.osVersion, input.apiLevel, input.architecture, executionMode, input.serial,
       input.buildVersion ?? null, input.securityPatch ?? null, timestamp, timestamp,
     )
     const device = this.getBySerial(input.serial)!

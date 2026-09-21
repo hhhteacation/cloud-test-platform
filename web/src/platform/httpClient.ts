@@ -2,6 +2,7 @@ import type {
   Artifact,
   ArtifactKind,
   CreateTaskInput,
+  DevicePlatform,
   DeviceProfile,
   DeviceEndpoint,
   DeviceDiscoveryCandidate,
@@ -34,16 +35,20 @@ export class HttpTestPlatformClient implements TestPlatformClient {
 
   constructor(private readonly apiBaseUrl: string) {}
 
-  listDevices() {
-    return this.request<DeviceProfile[]>('/devices')
+  private platformQuery(platform?: DevicePlatform) {
+    return platform && platform !== 'android' ? `?platform=${platform}` : ''
   }
 
-  refreshDevices() {
-    return this.request<DeviceProfile[]>('/devices/refresh', { method: 'POST' })
+  listDevices(platform?: DevicePlatform) {
+    return this.request<DeviceProfile[]>(`/devices${this.platformQuery(platform)}`)
   }
 
-  discoverDevices() {
-    return this.request<DeviceDiscoveryCandidate[]>('/devices/discover', { method: 'POST' })
+  refreshDevices(platform?: DevicePlatform) {
+    return this.request<DeviceProfile[]>(`/devices/refresh${this.platformQuery(platform)}`, { method: 'POST' })
+  }
+
+  discoverDevices(platform?: DevicePlatform) {
+    return this.request<DeviceDiscoveryCandidate[]>(`/devices/discover${this.platformQuery(platform)}`, { method: 'POST' })
   }
 
   discoverNetworkDevices() {
@@ -106,11 +111,11 @@ export class HttpTestPlatformClient implements TestPlatformClient {
     return this.request<NetworkConnectionOperation>(`/devices/network/connect-operations/${encodeURIComponent(operationId)}/cancel`, { method: 'POST' })
   }
 
-  registerDevice(serial: string) {
+  registerDevice(serial: string, platform?: DevicePlatform) {
     return this.request<DeviceProfile>('/devices/register', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ serial }),
+      body: JSON.stringify({ serial, platform: platform ?? 'android' }),
     })
   }
 
